@@ -2,7 +2,9 @@
 
 Hybrid cloud + local execution platform for a role-based AI software engineering team.
 
-The platform is designed around five specialist agents coordinated by Ruata, with a cloud control plane and a secure local development bridge for working with projects on a developer workstation.
+The platform is designed around five specialist agents coordinated by Ruata, a **Supabase-backed cloud platform**, a Python/FastAPI control plane, and a secure local development bridge for working with projects on a developer workstation.
+
+> **Canonical documentation:** `AI_Software_Development_Agent_Team_Architecture.md` defines the target architecture; `AI Software Development Agent Team — Development Roadmap.md` defines implementation order and acceptance gates. This README is the operational entry point and must remain consistent with those documents.
 
 ## Agent team
 
@@ -12,32 +14,63 @@ The platform is designed around five specialist agents coordinated by Ruata, wit
 - **John** — Backend & Data Engineer
 - **Ian** — Quality, Security & Reliability Engineer
 
+## Backend architecture: Supabase-first
+
+Supabase is the **canonical managed cloud backend foundation** for this project.
+
+```text
+Supabase
+├── Auth              Production user identity and sessions
+├── PostgreSQL        Durable application/runtime state
+├── RLS               Database-enforced authorization
+├── Realtime          Live dashboard/application state
+├── Storage           Larger artifacts and blobs
+└── Edge Functions    Bounded webhooks/lightweight server operations
+
+Python/FastAPI Control Plane
+├── Ruata orchestration
+├── Agent runtime
+├── Task scheduling
+├── Policy engine
+├── Tool gateway
+├── Approval workflow
+├── Long-running/background workers
+└── Secure local-bridge gateway
+
+Local Agent Bridge
+├── Filesystem
+├── Terminal
+├── Git / worktrees
+├── Browser / Playwright
+├── Docker / local tooling
+└── VS Code integration
+```
+
+Supabase is not intended to replace the Python control plane. The control plane owns orchestration, model execution, policy, approvals, long-running jobs, and the secure bridge protocol. Supabase provides managed identity, relational persistence, authorization, realtime delivery, and appropriate storage/serverless primitives.
+
+Self-managed PostgreSQL remains an optional local/integration-test configuration. It is not the production source of truth.
+
 ## Current implementation status
 
-The project is under active phased development. Phases 0–8 have working foundations, with supporting implementation for the later platform phases. See the live status table in `AI Software Development Agent Team — Development Roadmap.md`.
+The project is under active phased development. Early domain, persistence, identity, bridge, policy, orchestration, agent-runtime, dashboard, VS Code, evaluation, CI, sandbox, and observability foundations exist, but the system is **not yet a production-ready autonomous coding platform**.
 
-Currently implemented foundations include:
+The immediate backend work is to complete the migration from the existing generic PostgreSQL/development-JWT foundations to the Supabase-first architecture:
 
-- Shared domain models and task state machine.
-- PostgreSQL schema and repository abstraction.
-- Development JWT authentication primitives.
-- Device and workspace enrollment services.
-- Local Agent Bridge with workspace/path/command policy enforcement.
-- Secure outbound WebSocket bridge protocol.
-- Agent/tool policy engine and explicit high-risk approval gate.
-- Shared tool registry.
-- Ruata task planning and specialist routing.
-- Provider-neutral OpenAI Agents SDK adapter.
-- Five role-specific agent specifications.
-- Initial Next.js dashboard.
-- VS Code extension that can start/stop the local bridge.
-- Git worktree manager.
-- Docker-based local sandbox adapter.
-- GitHub Actions CI.
-- Initial Ruata evaluation fixtures/runner.
-- Structured observability events.
+```text
+Supabase schema/migrations
+        ↓
+Supabase Auth + profiles/memberships
+        ↓
+RLS + authorization tests
+        ↓
+Repository/control-plane integration
+        ↓
+Realtime / Storage / bounded Edge Functions
+        ↓
+Local bridge + agent workflows
+```
 
-The project is **not yet a production-ready autonomous coding platform**. Authentication persistence, cloud MCP servers, full tool implementations, production sandbox providers, comprehensive dashboard workflows, centralized observability, security testing, and the first full end-to-end benchmark are still being implemented.
+See `AI Software Development Agent Team — Development Roadmap.md` for the current phase table and acceptance gates.
 
 ## Architecture
 
@@ -52,30 +85,62 @@ The development roadmap is:
 Target operating model:
 
 ```text
-Web Dashboard
-     |
-     v
-Cloud Control Plane
-     |
-     +-- Ruata Orchestrator
-     +-- Kimi
-     +-- Manasseh
-     +-- John
-     +-- Ian
-     |
-     | authenticated outbound connection
-     v
+Human
+  |
+  v
+Next.js Dashboard / VS Code
+  |
+  +---- Supabase Auth
+  |
+  +---- Supabase Realtime
+  |
+  v
+Python/FastAPI Control Plane
+  |
+  +-- Ruata Orchestrator
+  +-- Kimi
+  +-- Manasseh
+  +-- John
+  +-- Ian
+  +-- Policy / Approval / Tool Gateway
+  |
+  | authenticated outbound connection
+  v
 Local Agent Bridge
-     |
-     +-- VS Code
-     +-- Workspace / Files
-     +-- Terminal
-     +-- Git / Worktrees
-     +-- Browser / Playwright
-     +-- Docker / local tooling
+  |
+  +-- VS Code
+  +-- Workspace / Files
+  +-- Terminal
+  +-- Git / Worktrees
+  +-- Browser / Playwright
+  +-- Docker / local tooling
+  |
+  v
+GitHub / CI
 ```
 
 The local bridge is the workstation security boundary. It should not expose an unrestricted inbound server.
+
+## Supabase security model
+
+The public repository must contain no secrets.
+
+Safe client-side configuration may include the project's Supabase URL and the publishable/client key intended for browser use. Never commit or expose:
+
+```text
+Supabase service-role keys
+Supabase secret keys
+Database passwords
+JWT signing secrets
+LLM API keys
+OAuth client secrets
+Local bridge tokens
+Production credentials
+```
+
+Privileged Supabase credentials are server-side only and must never be shipped in the Next.js browser bundle, VS Code extension, or Local Agent Bridge.
+
+RLS is a required authorization layer for user-facing Supabase tables. Application-level authorization in the control plane does not replace database-level policy testing.
 
 ## Repository policy
 
@@ -93,8 +158,8 @@ services/
   control_plane/      FastAPI API/control plane
   agents/             Model runtime and agent composition
   orchestrator/       Ruata planning
-  persistence/        In-memory/PostgreSQL repositories
-  identity/           Device/workspace identity service
+  persistence/        Repository/domain persistence abstraction
+  identity/           User/device/workspace identity service
   approval/           Human approval gate
   policy/             Least-privilege policy engine
   tool_gateway/       Shared tool registry
@@ -109,9 +174,8 @@ local/
 vscode-extension/     VS Code integration
 config/               Declarative agent policies
 infra/
-  db/                 PostgreSQL schema migrations
-  docker-compose.yml  Local Postgres/Redis
-  ...                 Deployment scaffolding
+  db/                 Supabase/PostgreSQL migrations
+  docker-compose.yml  Optional local infrastructure
 evaluations/           Agent evaluation fixtures and runners
 tests/                 Cross-service/unit/security tests
 docs/                  Architecture, API, security and operations
@@ -136,9 +200,11 @@ For the VS Code integration:
 - Node.js/npm
 - A Python executable visible to the extension
 
-For local persistence/sandbox development:
+For local development and testing:
 
-- Docker Desktop or Docker Engine
+- Docker Desktop or Docker Engine when using local infrastructure/sandbox adapters
+- A Supabase project for backend integration testing when the Supabase environment is required
+- Supabase CLI for migration workflows where applicable
 
 ## Clone the repository
 
@@ -180,7 +246,9 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-## Configure local environment
+## Configure environment
+
+Copy the environment template:
 
 ```bash
 cp .env.example .env
@@ -192,44 +260,49 @@ On Windows PowerShell:
 Copy-Item .env.example .env
 ```
 
-Set at minimum for model-backed development:
+For Supabase-backed development, configure the values expected by the current application implementation. The canonical production direction is:
 
 ```dotenv
 ENVIRONMENT=development
-JWT_SECRET=replace-with-a-long-local-development-secret
-OPENAI_API_KEY=your-key
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
+SUPABASE_SECRET_KEY=YOUR_SERVER_ONLY_SECRET
 MODEL_PROVIDER=openai
 MODEL_NAME=your-supported-model
-```
-
-If using the local Postgres stack:
-
-```dotenv
-DATABASE_URL=postgresql://ruata:ruata@localhost:5432/ruata
+OPENAI_API_KEY=your-key
 ```
 
 Do not commit `.env` or real credentials.
 
-## Start local infrastructure
+### Credential boundary
 
-```bash
-docker compose -f infra/docker-compose.yml up -d
+`SUPABASE_PUBLISHABLE_KEY` may be used by browser-facing code when appropriate. A Supabase secret/service credential must only be used by trusted server-side control-plane code and must never be exposed to clients.
+
+The exact environment-variable names may evolve during the migration, but the security boundary does not.
+
+## Supabase database workflow
+
+The canonical production database is the project's Supabase PostgreSQL instance.
+
+Versioned SQL migrations live under:
+
+```text
+infra/db/
 ```
 
-Check containers:
+The migration workflow should be:
 
-```bash
-docker compose -f infra/docker-compose.yml ps
+```text
+1. Create/update migration
+2. Apply to a clean development/staging Supabase project
+3. Run schema and RLS tests
+4. Review the generated database changes
+5. Promote through the controlled deployment process
 ```
 
-The current compose stack provides PostgreSQL and Redis for local development. Apply `infra/db/001_initial_schema.sql` and `infra/db/002_identity.sql` to PostgreSQL before running the API with `DATABASE_URL` configured.
+Local Docker PostgreSQL may be used for fast integration testing where it matches the required behavior, but it must not become the production source of truth.
 
-One way to apply the SQL using `psql` is:
-
-```bash
-psql postgresql://ruata:ruata@localhost:5432/ruata -f infra/db/001_initial_schema.sql
-psql postgresql://ruata:ruata@localhost:5432/ruata -f infra/db/002_identity.sql
-```
+Before modifying database/Auth/RLS behavior, read the canonical architecture and roadmap and verify which acceptance gate is affected.
 
 ## Start the control plane
 
@@ -246,13 +319,7 @@ Health: http://127.0.0.1:8000/health
 Docs:   http://127.0.0.1:8000/docs
 ```
 
-In development, a temporary JWT can be requested with:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/auth/dev-token
-```
-
-Use the returned bearer token for authenticated API calls.
+The development-only auth path may remain available temporarily during migration for isolated tests. It must not be treated as the production authentication architecture.
 
 ## Start the dashboard
 
@@ -270,7 +337,64 @@ Open:
 http://localhost:3000
 ```
 
-The dashboard currently reads agent/task state from the control plane and serves as the starting point for the full Agents Dashboard described in the roadmap.
+The target dashboard authentication flow is Supabase Auth, while privileged task/agent operations continue through the control plane.
+
+## Realtime dashboard behavior
+
+Use Supabase Realtime selectively for live state such as:
+
+```text
+task status
+agent status
+approval state
+device presence
+execution state
+```
+
+Realtime is a delivery mechanism, not the source of truth. Durable state remains in Supabase PostgreSQL.
+
+## Storage and artifacts
+
+Use Supabase Storage for appropriate larger artifacts such as:
+
+```text
+reports
+logs
+test artifacts
+screenshots
+other non-secret blobs
+```
+
+Store structured metadata in PostgreSQL and enforce authorization for Storage access. Do not upload `.env` files, credentials, private keys, or other secrets as general artifacts.
+
+## Edge Functions
+
+Supabase Edge Functions are intended for bounded operations such as:
+
+```text
+webhooks
+lightweight authenticated endpoints
+notification fan-out
+database-adjacent automation
+```
+
+They are not the primary runtime for long-running agent execution, arbitrary terminal access, browser automation, or local workstation control. Those remain control-plane/worker or Local Agent Bridge responsibilities.
+
+## Start local infrastructure
+
+The repository contains optional Docker infrastructure for local development, integration tests, and sandbox support:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d
+```
+
+Check containers:
+
+```bash
+docker compose -f infra/docker-compose.yml ps
+```
+
+Do not interpret local Docker PostgreSQL as the production backend.
 
 ## Run the tests
 
@@ -280,7 +404,9 @@ From repository root:
 python -m pytest -v
 ```
 
-The current suite covers the domain state machine, Ruata planner, identity enrollment, approval behavior, and local bridge policy controls. The suite will expand as the remaining roadmap phases are implemented.
+Supabase-dependent tests should run against a dedicated test/development Supabase environment or an explicitly supported local PostgreSQL equivalent, with RLS/Auth tests included for the relevant acceptance gate.
+
+The current suite covers the domain state machine, planning, identity foundations, approval behavior, and local bridge policy controls. The suite will expand as the Supabase migration and remaining roadmap phases are implemented.
 
 ## Run the Ruata evaluation fixture
 
@@ -288,7 +414,16 @@ The current suite covers the domain state machine, Ruata planner, identity enrol
 python evaluations/runner.py
 ```
 
-This currently validates deterministic routing scenarios. Model-quality evaluations will be added under `evaluations/ruata`, `evaluations/kimi`, `evaluations/john`, `evaluations/manasseh`, `evaluations/ian`, and `evaluations/system`.
+This currently validates deterministic routing scenarios. Model-quality evaluations will be added under:
+
+```text
+evaluations/ruata
+evaluations/kimi
+evaluations/john
+evaluations/manasseh
+evaluations/ian
+evaluations/system
+```
 
 ## Local Agent Bridge
 
@@ -298,7 +433,7 @@ The Local Agent Bridge lives under:
 local/bridge/
 ```
 
-It is intended to run on the developer workstation and maintain an authenticated outbound connection to the control plane.
+It runs on the developer workstation and maintains an authenticated outbound connection to the control plane.
 
 The current bridge CLI requires:
 
@@ -323,21 +458,24 @@ git.diff
 
 Before executing a request it validates workspace scope, sensitive-path blocks, agent/tool policy, command allowlists, and risk level.
 
-## Device enrollment
+Supabase Auth is the production user identity layer, but the bridge remains a separate device/workspace execution boundary.
 
-The intended development flow is:
+## Device and workspace enrollment
+
+The intended target flow is:
 
 ```text
-1. Start control plane.
-2. Obtain a development auth token.
-3. Request a device enrollment code.
-4. Enroll the workstation/device.
-5. Register a workspace.
-6. Configure the device ID in the VS Code extension.
-7. Start the Local Agent Bridge.
+1. User signs in with Supabase Auth.
+2. User creates/selects a workspace/project.
+3. Device is enrolled and associated with the authorized user/workspace.
+4. Workspace path is explicitly registered.
+5. VS Code extension receives non-privileged configuration.
+6. Local Agent Bridge establishes outbound authenticated connection.
+7. Control plane authorizes task-specific operations.
+8. High-risk operations require approval.
 ```
 
-The identity service is currently an application-level development implementation. Durable user/device/workspace persistence and production identity integration remain roadmap work.
+Device revocation must prevent subsequent local execution until the device is re-enrolled.
 
 ## VS Code extension
 
@@ -351,14 +489,15 @@ npm run compile
 
 Open the extension folder in VS Code and use **Run Extension** from the Extension Development Host workflow.
 
-Configure:
+Configure non-secret settings such as:
 
 ```text
 ruata.controlPlaneUrl
-ruata.bridgeToken
 ruata.deviceId
 ruata.pythonPath
 ```
+
+The extension must not contain Supabase service-role/secret credentials or other privileged backend credentials.
 
 Then run:
 
@@ -368,7 +507,7 @@ Ruata: Connect
 
 The extension starts the local bridge for the currently opened workspace. `Ruata: Status` reports the current workspace/device/bridge state, and `Ruata: Stop Local Bridge` terminates it.
 
-Production credential storage will move to VS Code/OS secure storage as the extension matures.
+Production credential storage will use VS Code/OS secure storage where credentials are legitimately required by the extension.
 
 ## Git worktrees
 
@@ -398,7 +537,9 @@ GitHub Actions is configured in:
 .github/workflows/ci.yml
 ```
 
-Pushes to `main` run Python tests across supported Python versions plus dashboard and VS Code compilation checks.
+CI should run Python tests, dashboard/VS Code checks, and progressively add Supabase migration/RLS/Auth integration checks as those capabilities become testable in automation.
+
+A passing CI run must not be claimed unless the actual workflow result is verified.
 
 ## Security model
 
@@ -411,7 +552,10 @@ The platform follows least privilege by default:
 - Commands use `shell=False` in the local bridge.
 - Agent/tool/path/risk policy is evaluated before execution.
 - High/critical local actions require an approval workflow.
-- Agents must not weaken tests, linting, type checks, or security controls to hide failures.
+- Supabase RLS protects user-facing database rows.
+- Supabase secret/service credentials remain server-side only.
+- Database/Auth/Storage changes are tested as security-sensitive changes.
+- Agents must not weaken tests, linting, type checks, RLS, or security controls to hide failures.
 
 See `AI_Software_Development_Agent_Team_Architecture.md` for the complete security and operating model.
 
@@ -421,12 +565,17 @@ The implementation follows:
 
 `AI Software Development Agent Team — Development Roadmap.md`
 
-The intended order is:
+Current target sequence:
 
 ```text
-Foundation
-  -> Persistence / Identity
-  -> Local Bridge / Policy
+Supabase schema / migrations
+  -> Supabase Auth
+  -> profiles + workspace memberships
+  -> RLS + authorization tests
+  -> repository/control-plane integration
+  -> durable task/run/audit/idempotency state
+  -> Local Bridge authorization
+  -> Realtime / Storage / Edge Functions
   -> Tools / MCP
   -> Ruata
   -> Kimi
@@ -442,3 +591,17 @@ Foundation
 ```
 
 Do not skip acceptance gates merely to expose more autonomy earlier.
+
+## Source-of-truth rule
+
+When implementation decisions are made, use this order:
+
+```text
+1. AI_Software_Development_Agent_Team_Architecture.md
+2. AI Software Development Agent Team — Development Roadmap.md
+3. AGENTS.md and repository-local instructions
+4. Existing code/tests
+5. Current authoritative external documentation for technologies used
+```
+
+When implementation diverges from the architecture, update the source-of-truth documents first or record an explicit architecture decision before continuing.
