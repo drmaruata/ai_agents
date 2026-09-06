@@ -8,12 +8,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, ApprovalStatus, RiskLevel, Task, TaskStatus, Workspace, utc_now
+from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, ApprovalStatus, DeviceStatus, RiskLevel, Task, TaskStatus, Workspace, utc_now
 from services.agents.local_routes import build_router
 from services.agents.runtime import AgentRuntime
 from services.agents.service import AgentExecutionService
 from services.approval.service import ApprovalService
 from services.bridge.manager import BridgeConnectionManager
+from services.identity.repository import PostgresIdentityRepository, InMemoryIdentityRepository
 from services.identity.service import IdentityService
 from services.observability.events import emit
 from services.orchestrator.service import OrchestrationService
@@ -82,13 +83,14 @@ class WorkspaceRegister(BaseModel):
 
 
 repository: Repository = PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
+identity_repository = PostgresIdentityRepository(settings.database_url) if settings.database_url else InMemoryIdentityRepository()
 orchestrator = OrchestrationService(repository)
 agent_execution = AgentExecutionService(repository, AgentRuntime(settings.model_name))
-identity = IdentityService()
+identity = IdentityService(identity_repository)
 bridge_manager = BridgeConnectionManager()
 policy_engine = PolicyEngine(DEFAULT_POLICIES)
 approvals = ApprovalService()
-app = FastAPI(title="Ruata Control Plane", version="0.9.0")
+app = FastAPI(title="Ruata Control Plane", version="0.10.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 event_connections: set[WebSocket] = set()
 
@@ -170,7 +172,7 @@ def create_enrollment(_: str = Depends(authenticate)) -> dict[str, str]:
 @app.post("/api/devices/enroll")
 def enroll_device(payload: EnrollmentComplete) -> dict[str, Any]:
     try:
-        device = identity.enroll_device(code=payload.code, device_id=payload.device_id, name=payload.name, platform=payload.platform, hostname=payload.hostname, vs_code_version=payload.vscode_version, bridge_version=payload.bridge_version)
+        device = identity.enroll_device(code=payload.code, device_id=payload.device_id, name=payload.name, platform=payload.platform, hostname=payload.hostname, vscode_version=payload.vscode_version, bridge_version=payload.bridge_version)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"device": device.model_dump(mode="json"), "status": "registered"}
@@ -178,7 +180,7 @@ def enroll_device(payload: EnrollmentComplete) -> dict[str, Any]:
 
 @app.get("/api/devices")
 def list_devices(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
-    return [device.model_dump(mode="json") | {"bridge_connected": device.device_id in bridge_manager.connections} for device in identity.devices.values()]
+    return [device.model_dump(mode="json") | {"bridge_connected": device.device_id in bridge_manager.connections} for device in identity.repository.list_devices()]
 
 
 @app.post("/api/workspaces", response_model=Workspace)
@@ -187,12 +189,11 @@ def register_workspace(payload: WorkspaceRegister, _: str = Depends(authenticate
         return identity.register_workspace(Workspace(**payload.model_dump()))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    
 
 
 @app.get("/api/workspaces")
 def list_workspaces(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
-    return [workspace.model_dump(mode="json") for workspace in identity.workspaces.values()]
+    return [workspace.model_dump(mode="json") for workspace in identity.repository.list_workspaces()]
 
 
 @app.post("/api/bridge/execute")
@@ -218,6 +219,15 @@ async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(auth
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_EXECUTED, actor=payload.agent.value, task_id=payload.task_id, device_id=payload.device_id, metadata={"tool": payload.tool, "ok": response.get("ok", False)}))
     return response
+
+
+def shlex_join(command: Any) -> str | None:
+    if not command:
+        return None
+    if isinstance(command, list):
+        import shlex
+        return shlex.join([str(item) for item in command])
+    return str(command)
 
 
 @app.post("/api/tasks", response_model=Task)
@@ -302,8 +312,7 @@ async def bridge(websocket: WebSocket) -> None:
     await websocket.accept()
     await bridge_manager.register(device_id, websocket)
     if device_id in identity.devices:
-        identity.devices[device_id].status = "online"
-        identity.devices[device_id].last_seen = utc_now()
+        identity.update_device_status(device_id, DeviceStatus.ONLINE)
     try:
         await websocket.send_json({"event": "bridge.ready", "protocol": "1", "device_id": device_id})
         while True:
@@ -312,7 +321,7 @@ async def bridge(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         bridge_manager.unregister(device_id, websocket)
         if device_id in identity.devices:
-            identity.devices[device_id].status = "offline"
+            identity.update_device_status(device_id, DeviceStatus.OFFLINE)
 
 
 async def broadcast(message: dict[str, Any]) -> None:
