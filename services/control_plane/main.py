@@ -7,6 +7,8 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, Field
 
 from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, Task, TaskStatus, Workspace, utc_now
+from services.agents.runtime import AgentRuntime
+from services.agents.service import AgentExecutionService
 from services.identity.service import IdentityService
 from services.orchestrator.service import OrchestrationService
 from services.persistence.repository import InMemoryRepository, PostgresRepository, Repository
@@ -30,17 +32,20 @@ class TaskTransition(BaseModel):
     expected_version: int = Field(ge=1)
 
 
-class EnrollmentRequest(BaseModel):
+class AgentRunCreate(BaseModel):
+    task_id: str = Field(min_length=1)
+    agent: AgentRole
+    prompt: str = Field(min_length=1)
+
+
+class EnrollmentComplete(BaseModel):
+    code: str = Field(min_length=1)
     device_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     platform: str = Field(min_length=1)
     hostname: str = Field(min_length=1)
     vscode_version: str | None = None
     bridge_version: str | None = None
-
-
-class EnrollmentComplete(EnrollmentRequest):
-    code: str = Field(min_length=1)
 
 
 class WorkspaceRegister(BaseModel):
@@ -53,8 +58,9 @@ class WorkspaceRegister(BaseModel):
 
 repository: Repository = PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
 orchestrator = OrchestrationService(repository)
+agent_execution = AgentExecutionService(repository, AgentRuntime(settings.model_name))
 identity = IdentityService()
-app = FastAPI(title="Ruata Control Plane", version="0.4.0")
+app = FastAPI(title="Ruata Control Plane", version="0.5.0")
 connections: set[WebSocket] = set()
 
 
@@ -79,6 +85,17 @@ def agents(_: str = Depends(authenticate)) -> list[dict[str, str]]:
         {"id": AgentRole.JOHN.value, "name": "John", "role": "backend_data", "status": "idle"},
         {"id": AgentRole.IAN.value, "name": "Ian", "role": "qa_security_reliability", "status": "idle"},
     ]
+
+
+@app.post("/api/agents/run")
+async def run_agent(payload: AgentRunCreate, _: str = Depends(authenticate)) -> dict[str, Any]:
+    if repository.get_task(payload.task_id) is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        run, output = await agent_execution.run(task_id=payload.task_id, agent=payload.agent, prompt=payload.prompt)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Agent execution failed: {exc}") from exc
+    return {"run": run.model_dump(mode="json"), "output": output}
 
 
 @app.post("/api/devices/enrollment-code")
@@ -125,12 +142,7 @@ def list_workspaces(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
 async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate)) -> Task:
     task = Task(task_id=f"TASK-{uuid4().hex[:8].upper()}", **payload.model_dump())
     repository.create_task(task)
-    repository.audit(
-        AuditEvent(
-            event_id=str(uuid4()), event_type=AuditEventType.TASK_CREATED,
-            actor=user_id, task_id=task.task_id, metadata={"project_id": task.project_id},
-        )
-    )
+    repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TASK_CREATED, actor=user_id, task_id=task.task_id, metadata={"project_id": task.project_id}))
     await broadcast({"event": "task.created", "task": task.model_dump(mode="json")})
     return task
 
