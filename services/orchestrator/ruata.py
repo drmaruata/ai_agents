@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+from packages.schemas.domain import AgentRole, RiskLevel, TaskStatus
 
 
 class TaskPhase(StrEnum):
@@ -17,25 +21,95 @@ class TaskPhase(StrEnum):
 @dataclass(slots=True)
 class TaskSpec:
     task_id: str
+    project_id: str
     title: str
     description: str
-    risk_level: str = "low"
-    phase: TaskPhase = TaskPhase.ANALYZING
-    dependencies: list[str] = field(default_factory=list)
+    risk_level: RiskLevel = RiskLevel.LOW
+    acceptance_criteria: list[str] = field(default_factory=list)
+    allowed_paths: list[str] = field(default_factory=list)
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class PlannedTask:
+    id: str
+    parent_task_id: str
+    agent: AgentRole
+    action: str
+    depends_on: list[str] = field(default_factory=list)
+    risk_level: RiskLevel = RiskLevel.LOW
+    acceptance_criteria: list[str] = field(default_factory=list)
 
 
 class RuataOrchestrator:
-    """Initial orchestration skeleton; production model/tool adapters are added in later phases."""
+    """Deterministic task planner; model-backed reasoning can refine the plan later."""
 
-    def plan(self, task: TaskSpec, research_required: bool = False) -> list[dict[str, str]]:
-        tasks = []
+    def classify(self, task: TaskSpec) -> dict[str, bool]:
+        text = f"{task.title} {task.description}".lower()
+        research_terms = ("research", "compare", "architecture", "library", "framework", "integration", "migration")
+        return {
+            "research_required": any(term in text for term in research_terms),
+            "frontend_required": any(term in text for term in ("ui", "ux", "frontend", "page", "component", "form", "dashboard")),
+            "backend_required": any(term in text for term in ("api", "backend", "database", "auth", "server", "supabase")),
+            "qa_required": True,
+        }
+
+    def plan(self, task: TaskSpec, research_required: bool | None = None) -> list[PlannedTask]:
+        classification = self.classify(task)
+        if research_required is None:
+            research_required = classification["research_required"]
+
+        plan: list[PlannedTask] = []
+        research_id = f"{task.task_id}.research"
         if research_required:
-            tasks.append({"agent": "kimi", "action": "research", "task_id": task.task_id})
-        tasks.extend(
-            [
-                {"agent": "john", "action": "backend", "task_id": task.task_id},
-                {"agent": "manasseh", "action": "frontend", "task_id": task.task_id},
-                {"agent": "ian", "action": "validate", "task_id": task.task_id},
-            ]
-        )
-        return tasks
+            plan.append(PlannedTask(
+                id=research_id,
+                parent_task_id=task.task_id,
+                agent=AgentRole.KIMI,
+                action="research_and_architecture",
+                acceptance_criteria=["research.md", "architecture decision", "implementation guidance"],
+            ))
+
+        implementation_dependency = [research_id] if research_required else []
+        if classification["backend_required"]:
+            plan.append(PlannedTask(
+                id=f"{task.task_id}.backend",
+                parent_task_id=task.task_id,
+                agent=AgentRole.JOHN,
+                action="backend_implementation",
+                depends_on=implementation_dependency,
+                risk_level=max(task.risk_level, RiskLevel.MEDIUM, key=lambda r: list(RiskLevel).index(r)),
+                acceptance_criteria=["backend tests pass", "contract validated"],
+            ))
+        if classification["frontend_required"]:
+            frontend_deps = implementation_dependency.copy()
+            plan.append(PlannedTask(
+                id=f"{task.task_id}.frontend",
+                parent_task_id=task.task_id,
+                agent=AgentRole.MANASSEH,
+                action="frontend_implementation",
+                depends_on=frontend_deps,
+                risk_level=task.risk_level,
+                acceptance_criteria=["frontend tests pass", "browser validation passes"],
+            ))
+
+        implementation_ids = [item.id for item in plan if item.agent in {AgentRole.JOHN, AgentRole.MANASSEH}]
+        plan.append(PlannedTask(
+            id=f"{task.task_id}.qa",
+            parent_task_id=task.task_id,
+            agent=AgentRole.IAN,
+            action="validate_and_review",
+            depends_on=implementation_ids or implementation_dependency,
+            risk_level=task.risk_level,
+            acceptance_criteria=["static checks pass", "tests pass", "security checks pass"],
+        ))
+        return plan
+
+    def next_status(self, current: TaskStatus, *, validation_passed: bool, requires_approval: bool) -> TaskStatus:
+        if current == TaskStatus.VALIDATING:
+            return TaskStatus.REVIEW if validation_passed else TaskStatus.REPAIR
+        if current == TaskStatus.REVIEW:
+            return TaskStatus.HUMAN_APPROVAL if requires_approval else TaskStatus.COMPLETED
+        if current == TaskStatus.HUMAN_APPROVAL:
+            return TaskStatus.COMPLETED if validation_passed else TaskStatus.REPAIR
+        raise ValueError(f"No orchestration transition defined for {current.value}")
