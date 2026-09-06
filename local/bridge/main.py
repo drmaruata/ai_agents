@@ -6,6 +6,7 @@ import json
 import shlex
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -19,11 +20,20 @@ class WorkspacePolicyError(RuntimeError):
     pass
 
 
+@dataclass(slots=True)
 class LocalAgentBridge:
     """Secure workstation execution boundary."""
 
-    def __init__(self, workspace: str, *, agent: AgentRole = AgentRole.RUATA, project_id: str = "local", workspace_id: str = "local-workspace", allowed_paths: list[str] | None = None) -> None:
+    workspace: Path
+    device_id: str
+    agent: AgentRole = AgentRole.RUATA
+    project_id: str = "local"
+    workspace_id: str = "local-workspace"
+    allowed_paths: list[Path] | None = None
+
+    def __init__(self, workspace: str, device_id: str, *, agent: AgentRole = AgentRole.RUATA, project_id: str = "local", workspace_id: str = "local-workspace", allowed_paths: list[str] | None = None) -> None:
         self.workspace = Path(workspace).resolve()
+        self.device_id = device_id
         self.agent = agent
         self.project_id = project_id
         self.workspace_id = workspace_id
@@ -32,7 +42,7 @@ class LocalAgentBridge:
 
     def resolve_path(self, relative_path: str) -> Path:
         candidate = (self.workspace / relative_path).resolve()
-        if not any(candidate == allowed or allowed in candidate.parents for allowed in self.allowed_paths):
+        if not any(candidate == allowed or allowed in candidate.parents for allowed in self.allowed_paths or []):
             raise WorkspacePolicyError(f"Path is outside the allowed workspace scope: {relative_path}")
         if any(part.lower() in {".env", ".env.local", "credentials", "secrets"} for part in candidate.parts):
             raise WorkspacePolicyError("Sensitive path is blocked by policy")
@@ -117,8 +127,7 @@ def main() -> None:
     parser.add_argument("--project-id", default="local")
     parser.add_argument("--workspace-id", default="local-workspace")
     args = parser.parse_args()
-    bridge = LocalAgentBridge(args.workspace, agent=AgentRole(args.agent), project_id=args.project_id, workspace_id=args.workspace_id)
-    bridge.device_id = args.device_id
+    bridge = LocalAgentBridge(args.workspace, args.device_id, agent=AgentRole(args.agent), project_id=args.project_id, workspace_id=args.workspace_id)
     asyncio.run(run_bridge_client(args.url, args.token, bridge))
 
 
