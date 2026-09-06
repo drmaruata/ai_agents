@@ -11,7 +11,7 @@ class AgentRuntimeError(RuntimeError):
 
 
 class AgentRuntime:
-    """Provider-neutral runtime with an optional OpenAI Agents SDK adapter."""
+    """Provider-neutral runtime with an OpenAI Agents SDK adapter."""
 
     def __init__(self, model: str | None = None) -> None:
         self.model = model
@@ -20,7 +20,7 @@ class AgentRuntime:
         config = AGENT_CONFIGS[agent_id]
         return Path(config.instructions_file).read_text(encoding="utf-8")
 
-    def build_openai_agent(self, agent_id: str):
+    def build_openai_agent(self, agent_id: str, tools: list[Any] | None = None):
         try:
             from agents import Agent
         except ImportError as exc:
@@ -32,6 +32,8 @@ class AgentRuntime:
         }
         if self.model:
             kwargs["model"] = self.model
+        if tools:
+            kwargs["tools"] = tools
         return Agent(**kwargs)
 
     async def run(self, agent_id: str, prompt: str) -> str:
