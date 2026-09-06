@@ -37,7 +37,7 @@ Build a hybrid cloud + local AI software-engineering platform with five role-bas
 
 The canonical architecture document is:
 
-`AI Software Development Agent Team — Architecture & Agent Specifications.md`
+`AI_Software_Development_Agent_Team_Architecture.md`
 
 Update that document when implementation changes materially affect the platform architecture, agent responsibilities, security model, execution model, or operating policies.
 
