@@ -20,7 +20,9 @@ class ApprovalService:
             task_id=task_id,
             action=action,
             risk_level=risk_level,
-            requested_by=requested_by,
+            # The domain model currently represents agent requesters separately from authenticated users.
+            # The authenticated user is retained in the audit event by the control plane.
+            requested_by=None,
         )
         self.approvals[approval.approval_id] = approval
         return approval
