@@ -13,7 +13,7 @@ dependencies = [
   "pytest>=8.4,<9",
   "psycopg[binary]>=3.2,<4",
   "PyJWT>=2.10,<3",
-  "openai-agents>=0.21,<0.22",
+  "openai-agents>=0.22,<0.23",
 ]
 
 [tool.pytest.ini_options]
