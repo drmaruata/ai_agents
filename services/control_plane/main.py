@@ -90,9 +90,30 @@ identity = IdentityService(identity_repository)
 bridge_manager = BridgeConnectionManager()
 policy_engine = PolicyEngine(DEFAULT_POLICIES)
 approvals = ApprovalService()
-app = FastAPI(title="Ruata Control Plane", version="0.10.0")
+app = FastAPI(title="Ruata Control Plane", version="0.11.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 event_connections: set[WebSocket] = set()
+
+
+def supabase_auth_enabled() -> bool:
+    return bool(settings.supabase_url and settings.supabase_publishable_key)
+
+
+def require_project_access(user_id: str, project_id: str) -> None:
+    if supabase_auth_enabled() and not identity.can_access_project(project_id, user_id):
+        raise HTTPException(status_code=403, detail="User is not authorized for this project")
+
+
+def require_workspace_access(user_id: str, workspace_id: str, project_id: str, device_id: str) -> None:
+    if not supabase_auth_enabled():
+        return
+    require_project_access(user_id, project_id)
+    if not identity.can_access_device(device_id, user_id):
+        raise HTTPException(status_code=403, detail="User does not own the device")
+    accessible = {item.workspace_id: item for item in identity.repository.list_workspaces(user_id=user_id)}
+    workspace = accessible.get(workspace_id)
+    if workspace is None or workspace.project_id != project_id or workspace.device_id != device_id:
+        raise HTTPException(status_code=403, detail="User is not authorized for this workspace")
 
 
 @app.get("/health")
@@ -102,9 +123,14 @@ def health() -> dict[str, str]:
 
 @app.post("/api/auth/dev-token")
 def dev_token() -> dict[str, str]:
-    if settings.environment != "development":
+    if settings.environment != "development" or supabase_auth_enabled():
         raise HTTPException(status_code=404, detail="Not found")
     return {"access_token": issue_dev_token()}
+
+
+@app.get("/api/auth/me")
+def auth_me(user_id: str = Depends(authenticate)) -> dict[str, str]:
+    return {"user_id": user_id, "provider": "supabase" if supabase_auth_enabled() else "development"}
 
 
 @app.get("/api/agents")
@@ -120,8 +146,10 @@ def agents(_: str = Depends(authenticate)) -> list[dict[str, str]]:
 
 @app.post("/api/agents/run")
 async def run_agent(payload: AgentRunCreate, user_id: str = Depends(authenticate)) -> dict[str, Any]:
-    if repository.get_task(payload.task_id) is None:
+    task = repository.get_task(payload.task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(user_id, task.project_id)
     emit("agent.run.requested", actor=user_id, task_id=payload.task_id, agent=payload.agent.value)
     try:
         run, output = await agent_execution.run(task_id=payload.task_id, agent=payload.agent, prompt=payload.prompt)
@@ -134,8 +162,10 @@ async def run_agent(payload: AgentRunCreate, user_id: str = Depends(authenticate
 
 @app.post("/api/approvals/request")
 def request_approval(task_id: str, action: str, risk_level: RiskLevel = RiskLevel.HIGH, user_id: str = Depends(authenticate)) -> dict[str, Any]:
-    if repository.get_task(task_id) is None:
+    task = repository.get_task(task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(user_id, task.project_id)
     try:
         approval = approvals.request(task_id=task_id, action=action, risk_level=risk_level, requested_by=user_id)
     except ValueError as exc:
@@ -145,8 +175,12 @@ def request_approval(task_id: str, action: str, risk_level: RiskLevel = RiskLeve
 
 
 @app.get("/api/approvals")
-def list_approvals(status: ApprovalStatus | None = None, _: str = Depends(authenticate)) -> list[dict[str, Any]]:
-    values = list(approvals.approvals.values())
+def list_approvals(status: ApprovalStatus | None = None, user_id: str = Depends(authenticate)) -> list[dict[str, Any]]:
+    values = []
+    for item in approvals.approvals.values():
+        task = repository.get_task(item.task_id)
+        if task and (not supabase_auth_enabled() or identity.can_access_project(task.project_id, user_id)):
+            values.append(item)
     if status:
         values = [item for item in values if item.status == status]
     return [item.model_dump(mode="json") for item in values]
@@ -154,6 +188,13 @@ def list_approvals(status: ApprovalStatus | None = None, _: str = Depends(authen
 
 @app.post("/api/approvals/{approval_id}/decide")
 def decide_approval(approval_id: str, payload: ApprovalDecision, user_id: str = Depends(authenticate)) -> dict[str, Any]:
+    existing = approvals.approvals.get(approval_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    task = repository.get_task(existing.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(user_id, task.project_id)
     try:
         approval = approvals.decide(approval_id, approved=payload.approved, decided_by=user_id, reason=payload.reason)
     except KeyError as exc:
@@ -165,42 +206,48 @@ def decide_approval(approval_id: str, payload: ApprovalDecision, user_id: str = 
 
 
 @app.post("/api/devices/enrollment-code")
-def create_enrollment(_: str = Depends(authenticate)) -> dict[str, str]:
-    return {"code": identity.create_enrollment_code("local-developer")}
+def create_enrollment(user_id: str = Depends(authenticate)) -> dict[str, str]:
+    return {"code": identity.create_enrollment_code(user_id)}
 
 
 @app.post("/api/devices/enroll")
-def enroll_device(payload: EnrollmentComplete) -> dict[str, Any]:
+def enroll_device(payload: EnrollmentComplete, user_id: str = Depends(authenticate)) -> dict[str, Any]:
     try:
-        device = identity.enroll_device(code=payload.code, device_id=payload.device_id, name=payload.name, platform=payload.platform, hostname=payload.hostname, vscode_version=payload.vscode_version, bridge_version=payload.bridge_version)
+        device = identity.enroll_device(code=payload.code, user_id=user_id, device_id=payload.device_id, name=payload.name, platform=payload.platform, hostname=payload.hostname, vscode_version=payload.vscode_version, bridge_version=payload.bridge_version)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"device": device.model_dump(mode="json"), "status": "registered"}
 
 
 @app.get("/api/devices")
-def list_devices(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
-    return [device.model_dump(mode="json") | {"bridge_connected": device.device_id in bridge_manager.connections} for device in identity.repository.list_devices()]
+def list_devices(user_id: str = Depends(authenticate)) -> list[dict[str, Any]]:
+    devices = identity.repository.list_devices(user_id=user_id) if supabase_auth_enabled() else identity.repository.list_devices()
+    return [device.model_dump(mode="json") | {"bridge_connected": device.device_id in bridge_manager.connections} for device in devices]
 
 
 @app.post("/api/workspaces", response_model=Workspace)
-def register_workspace(payload: WorkspaceRegister, _: str = Depends(authenticate)) -> Workspace:
+def register_workspace(payload: WorkspaceRegister, user_id: str = Depends(authenticate)) -> Workspace:
+    require_project_access(user_id, payload.project_id)
     try:
-        return identity.register_workspace(Workspace(**payload.model_dump()))
+        return identity.register_workspace(Workspace(**payload.model_dump()), user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/workspaces")
-def list_workspaces(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
-    return [workspace.model_dump(mode="json") for workspace in identity.repository.list_workspaces()]
+def list_workspaces(user_id: str = Depends(authenticate)) -> list[dict[str, Any]]:
+    workspaces = identity.repository.list_workspaces(user_id=user_id) if supabase_auth_enabled() else identity.repository.list_workspaces()
+    return [workspace.model_dump(mode="json") for workspace in workspaces]
 
 
 @app.post("/api/bridge/execute")
-async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(authenticate)) -> dict[str, Any]:
+async def execute_on_device(payload: BridgeExecuteRequest, user_id: str = Depends(authenticate)) -> dict[str, Any]:
     task = repository.get_task(payload.task_id) if payload.task_id else None
     if payload.task_id and task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_workspace_access(user_id, payload.workspace_id, payload.project_id, payload.device_id)
+    if payload.task_id and task and task.project_id != payload.project_id:
+        raise HTTPException(status_code=403, detail="Task does not belong to project")
     if payload.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
         if not payload.approval_id:
             raise HTTPException(status_code=403, detail="Approval is required for high-risk local execution")
@@ -232,6 +279,7 @@ def shlex_join(command: Any) -> str | None:
 
 @app.post("/api/tasks", response_model=Task)
 async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> Task:
+    require_project_access(user_id, payload.project_id)
     scope = f"task.create:{user_id}"
     if idempotency_key:
         stored = repository.get_idempotency(idempotency_key, scope)
@@ -251,6 +299,7 @@ async def plan_task(task_id: str, user_id: str = Depends(authenticate)) -> list[
     task = repository.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(user_id, task.project_id)
     if task.status == TaskStatus.BACKLOG:
         task = repository.transition_task(task.task_id, TaskStatus.ANALYZING, task.version, actor=user_id, reason="begin planning")
         task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version, actor=user_id, reason="planning complete")
@@ -260,24 +309,31 @@ async def plan_task(task_id: str, user_id: str = Depends(authenticate)) -> list[
 
 
 @app.get("/api/tasks", response_model=list[Task])
-def list_tasks(project_id: str | None = None, _: str = Depends(authenticate)) -> list[Task]:
+def list_tasks(project_id: str | None = None, user_id: str = Depends(authenticate)) -> list[Task]:
+    if supabase_auth_enabled():
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id is required when Supabase authorization is enabled")
+        require_project_access(user_id, project_id)
     return repository.list_tasks(project_id)
 
 
 @app.get("/api/tasks/{task_id}", response_model=Task)
-def get_task(task_id: str, _: str = Depends(authenticate)) -> Task:
+def get_task(task_id: str, user_id: str = Depends(authenticate)) -> Task:
     task = repository.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(user_id, task.project_id)
     return task
 
 
 @app.post("/api/tasks/{task_id}/transition", response_model=Task)
 async def transition_task(task_id: str, payload: TaskTransition, user_id: str = Depends(authenticate)) -> Task:
+    current = repository.get_task(task_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    require_project_access(user_id, current.project_id)
     try:
         task = repository.transition_task(task_id, payload.status, payload.expected_version, actor=user_id, reason="API transition")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Task not found") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
