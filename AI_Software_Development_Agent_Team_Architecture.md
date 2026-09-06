@@ -1,8 +1,11 @@
 # AI Software Development Agent Team — Architecture & Agent Specifications
 
-**Version:** 2.0  
+**Version:** 3.0  
 **Date:** September 6, 2026  
-**Purpose:** Define a production-oriented hybrid cloud + local execution platform for a multi-agent AI software-engineering team, including agent roles, orchestration, local VS Code integration, security, isolation, observability, deployment, and controlled delivery.
+**Status:** Canonical architecture specification  
+**Purpose:** Define a production-oriented hybrid cloud + local execution platform for a multi-agent AI software-engineering team, including agent roles, orchestration, Supabase-backed cloud services, local VS Code integration, security, isolation, observability, deployment, and controlled delivery.
+
+> **Source of truth:** This document defines the target architecture. The Development Roadmap defines implementation order and acceptance gates. The root `README.md` provides the operational entry point. When implementation documents conflict, these three canonical documents must be reconciled before code changes continue.
 
 ---
 
@@ -16,13 +19,24 @@ The recommended system uses five specialized agent roles under a task-driven orc
 4. **John** — Backend & Data Engineer
 5. **Ian** — Quality, Security & Reliability Engineer
 
-The five roles should **not** operate as five autonomous chatbots continuously conversing with one another. Instead, Ruata should manage a structured task graph, delegate bounded work to specialist agents, maintain task state, enforce quality gates, and require human approval for consequential actions.
+The five roles should **not** operate as five autonomous chatbots continuously conversing with one another. Instead, Ruata should manage a structured task graph, delegate bounded work to specialist agents, maintain durable task state, enforce quality gates, and require human approval for consequential actions.
 
 The central operating principle is:
 
 > **Ruata coordinates. Kimi decides. Manasseh and John build. Ian proves it works. The human approves consequential changes.**
 
-The architecture is designed around current agentic software-engineering practices: specialized subagents, parallel execution where useful, repository-local instructions, isolated workspaces, structured artifacts, automated validation, evaluations, security controls, observability, and human oversight.
+The platform uses **Supabase as the managed cloud backend foundation**: PostgreSQL for durable relational state, Supabase Auth for user identity, Row Level Security (RLS) for tenant/resource authorization, Realtime for live state propagation, Storage for durable artifacts where appropriate, and Edge Functions for bounded server-side API/webhook jobs. A dedicated Python/FastAPI control plane remains responsible for orchestration, policy, agent runtime coordination, long-running work, and the secure local-bridge protocol.
+
+The architecture deliberately separates:
+
+```text
+Identity + durable cloud state  → Supabase
+Control + orchestration         → Python/FastAPI
+Agent reasoning                 → provider-neutral agent runtime
+Local privileged execution      → Local Agent Bridge
+User-facing application         → Next.js dashboard / VS Code
+Source control + CI              → GitHub / GitHub Actions
+```
 
 ---
 
@@ -36,44 +50,59 @@ The architecture is designed around current agentic software-engineering practic
                                     │
                                     ▼
                          ┌──────────────────────┐
-                         │       RUATA          │
-                         │ Orchestrator / EM    │
+                         │   NEXT.JS DASHBOARD  │
+                         │       / VS CODE      │
                          └──────────┬───────────┘
                                     │
-                       Task Graph / Delegation
+                         Supabase Auth / Realtime
                                     │
-              ┌─────────────────────┼─────────────────────┐
-              │                     │                     │
-              ▼                     ▼                     ▼
-        ┌───────────┐         ┌─────────────┐       ┌─────────────┐
-        │   KIMI    │         │  MANASSEH   │       │    JOHN     │
-        │ Research  │         │  Frontend   │       │  Backend    │
-        │ Architect │         │  Engineer   │       │  Engineer   │
-        └─────┬─────┘         └──────┬──────┘       └──────┬──────┘
-              │                      │                     │
-              │                      └──────────┬──────────┘
-              │                                 │
-              └─────────────────────────────────┘
-                                                ▼
-                                       ┌─────────────────┐
-                                       │      IAN        │
-                                       │ QA / Security   │
-                                       │ Reliability     │
-                                       └────────┬────────┘
-                                                │
-                                       PASS / FAIL / FIX
-                                                │
-                                   ┌────────────┴────────────┐
-                                   │                         │
-                                   ▼                         ▼
-                              Ruata Review             Human Review
-                                   │                         │
-                                   └────────────► Merge ◄────┘
+                                    ▼
+                   ┌────────────────────────────────┐
+                   │       SUPABASE PLATFORM        │
+                   │                                │
+                   │ PostgreSQL                     │
+                   │ Auth                           │
+                   │ RLS                            │
+                   │ Realtime                       │
+                   │ Storage                        │
+                   │ Edge Functions                 │
+                   └───────────────┬────────────────┘
+                                   │
+                          authenticated API
+                                   │
+                                   ▼
+                   ┌────────────────────────────────┐
+                   │       PYTHON CONTROL PLANE     │
+                   │                                │
+                   │ Ruata Orchestrator             │
+                   │ Task Engine / Queue            │
+                   │ Agent Runtime                   │
+                   │ Tool Gateway / Policy          │
+                   │ Approval Workflow               │
+                   │ Model Gateway                   │
+                   │ WebSocket / Bridge Gateway      │
+                   └───────────────┬────────────────┘
+                                   │
+                           secure outbound WSS
+                                   │
+                    ╔══════════════▼═══════════════╗
+                    ║       LOCAL DEV NODE         ║
+                    ║                              ║
+                    ║ VS Code Extension            ║
+                    ║ Local Agent Bridge            ║
+                    ║ Workspace / Files            ║
+                    ║ Terminal / Git               ║
+                    ║ Browser / Playwright         ║
+                    ║ Docker / local tooling      ║
+                    ╚══════════════┬═══════════════╝
+                                   │
+                                   ▼
+                               GitHub / CI
 ```
 
 ## 2.1 Core Design Principle
 
-Agents communicate primarily through **structured artifacts and task state**, not long free-form conversations.
+Agents communicate primarily through **structured artifacts, durable task state, events, and typed contracts**, not long free-form conversations.
 
 Typical artifacts:
 
@@ -90,102 +119,85 @@ security-report.md
 review.md
 ```
 
-This improves reproducibility, traceability, auditability, and handoff quality.
+The source repository remains the durable engineering memory. Supabase stores runtime/application state and cloud metadata required to operate the platform.
 
 ---
 
-
 # 2A. Hybrid Cloud + Local Execution Architecture
 
-The recommended deployment model is a **hybrid cloud + local execution system**.
+The platform is a **hybrid cloud + local execution system**.
 
-The cloud hosts the platform control plane: dashboard, orchestration, task state, agent registry, project memory metadata, audit logs, policy evaluation, model access, and optional cloud sandboxes.
+Supabase is the managed backend foundation for identity, relational state, authorization, realtime updates, and managed object storage. The Python control plane provides orchestration and policy enforcement above that foundation. The user's computer hosts a **Local Development Node** consisting of a VS Code extension and local agent bridge.
 
-The user's computer hosts a **Local Development Node** consisting of a VS Code extension and local agent bridge. This node provides controlled access to the currently selected VS Code workspace, terminal, Git, browser automation, local services, and development tools.
+The local node provides controlled access to the currently selected VS Code workspace, terminal, Git, browser automation, local services, and development tools. It maintains an outbound secure connection to the cloud control plane. The development computer must not be exposed directly to the public Internet merely so cloud agents can reach it.
 
-The local node should maintain an outbound secure connection to the cloud control plane. The development computer should not be exposed directly to the public Internet merely so cloud agents can reach it.
+## 2A.1 Cloud Service Responsibilities
 
-## 2A.1 Reference Topology
+### Supabase
 
-```text
-                                INTERNET
-                                   │
-                                   ▼
-                     ┌────────────────────────────┐
-                     │      AGENTS DASHBOARD      │
-                     │        Web Application     │
-                     │                            │
-                     │ Projects · Agents · Tasks │
-                     │ Runs · Memory · Approvals  │
-                     └─────────────┬──────────────┘
-                                   │
-                              HTTPS / SSE
-                                   │
-                                   ▼
-                     ┌────────────────────────────┐
-                     │     CLOUD CONTROL PLANE    │
-                     │                            │
-                     │ Ruata Orchestrator         │
-                     │ Task Engine / Queue        │
-                     │ Agent Registry             │
-                     │ Policy Engine              │
-                     │ Memory / Artifacts         │
-                     │ Audit / Observability      │
-                     │ Model Gateway              │
-                     └─────────────┬──────────────┘
-                                   │
-                           secure outbound WSS
-                                   │
-                    ╔══════════════▼═══════════════╗
-                    ║       LOCAL DEV NODE         ║
-                    ║          Your PC              ║
-                    ║                                ║
-                    ║  ┌────────────────────────┐    ║
-                    ║  │   VS Code Extension    │    ║
-                    ║  └───────────┬────────────┘    ║
-                    ║              │                 ║
-                    ║  ┌───────────▼────────────┐    ║
-                    ║  │   Local Agent Bridge   │    ║
-                    ║  └───────┬───┬───┬────────┘    ║
-                    ║          │   │   │             ║
-                    ║          ▼   ▼   ▼             ║
-                    ║       Files Git Terminal       ║
-                    ║          │   │   │             ║
-                    ║          ├── Browser           ║
-                    ║          ├── Playwright        ║
-                    ║          ├── Docker            ║
-                    ║          ├── Node / Python     ║
-                    ║          └── Project Services  ║
-                    ║                                ║
-                    ║       Registered Workspaces   ║
-                    ╚════════════════════════════════╝
-                                   │
-                                   ▼
-                              Git / GitHub
-```
+Supabase should be the canonical managed backend platform for:
+
+- user authentication and session identity
+- user/profile linkage to application records
+- workspace and project metadata
+- task/run/execution persistence
+- device registration metadata
+- approvals and audit records
+- row-level authorization using PostgreSQL RLS
+- realtime delivery of approved application state changes
+- artifact/object storage where database rows are insufficient
+- bounded Edge Functions for webhooks, lightweight server-side endpoints, and database-adjacent automation
+
+### Python/FastAPI control plane
+
+The control plane should own:
+
+- Ruata orchestration
+- task decomposition and dependency execution
+- specialist-agent lifecycle
+- model/provider routing
+- policy evaluation
+- tool authorization
+- approval enforcement
+- bridge session management
+- long-running/background work
+- agent runtime execution
+- structured event emission
+- integrations that require stateful workers or long-lived connections
+
+Supabase is therefore **not** a replacement for the control-plane architecture. It is the managed persistence/auth/realtime backend on which the control plane is built.
 
 ## 2A.2 Separation of Responsibilities
 
+### Supabase / managed cloud backend
+
+The Supabase layer should own:
+
+- authentication identity
+- session/token issuance and refresh
+- application relational data
+- durable task and run state
+- workspace/project membership data
+- RLS enforcement for user-facing data access
+- realtime application-state changes
+- durable artifact storage metadata and selected blobs
+- database functions/triggers where appropriate
+- bounded Edge Functions
+
 ### Cloud control plane
 
-The cloud side should own:
+The Python control plane should own:
 
-- authentication and user identity
-- project registration
-- device registration
-- agent definitions and versions
-- task creation and routing
-- task dependency graphs
-- agent lifecycle state
-- model routing
-- shared project metadata
-- artifact metadata and storage
-- policy decisions
-- approvals
-- audit logging
-- evaluation data
-- observability
-- optional cloud execution
+- agent orchestration
+- task scheduling and execution loops
+- model invocation
+- policy decisions that require contextual task/agent state
+- tool gateway
+- bridge gateway
+- approval orchestration
+- correlation IDs and execution context
+- long-running workers
+- reconciliation between local nodes and cloud state
 
 ### Local development node
 
@@ -203,74 +215,261 @@ The local node should own:
 - selected project credentials that must remain local
 - enforcement of local execution policy
 
-The cloud control plane should issue **requests**, not unrestricted shell instructions. The local bridge decides whether an operation is permitted before execution.
+The cloud control plane should issue **structured requests**, not unrestricted shell instructions. The local bridge decides whether an operation is permitted before execution.
 
-## 2A.3 Why the Hybrid Model
+## 2A.3 Why Supabase Is the Canonical Backend Foundation
 
-This architecture provides four important properties:
+The platform needs durable relational state, authentication, resource authorization, live updates, and managed storage. Supabase provides these capabilities while retaining standard PostgreSQL semantics.
 
-1. **Local context:** agents can work against the exact project and VS Code workspace currently being developed.
-2. **Cloud accessibility:** the dashboard and orchestration layer remain accessible from any device.
-3. **Security boundary:** the workstation is not a publicly exposed execution server.
-4. **Optional scalability:** long-running tasks can be moved to isolated cloud sandboxes without redesigning the overall system.
+The design goals are:
 
-## 2A.4 Local Development Node
+1. **Managed persistence:** avoid making self-managed PostgreSQL infrastructure a prerequisite for the production control plane.
+2. **Integrated identity:** use Supabase Auth rather than maintaining a parallel production identity issuer.
+3. **Database-enforced authorization:** use RLS so authorization does not depend solely on API code paths.
+4. **Realtime UI state:** use Supabase Realtime for dashboard-facing state updates where appropriate.
+5. **Managed object storage:** use Supabase Storage for larger artifacts that should not live in relational rows.
+6. **Operational simplicity:** keep deployment responsibilities focused on the Python control plane, frontend, local bridge, and agent workers.
 
-The local node should be treated as a first-class platform component rather than a temporary helper script.
+Self-hosted PostgreSQL remains an optional local/testing configuration, not the canonical production backend.
 
-Recommended components:
-
-```text
-Local Development Node
-├── Ruata VS Code Extension
-├── Local Agent Bridge
-├── Workspace Registry
-├── Permission / Policy Enforcer
-├── Process Manager
-├── Git / Worktree Manager
-├── Browser Controller
-├── Test Runner Adapter
-├── Diagnostics Adapter
-└── Secure Credential Broker
-```
-
-### VS Code extension
-
-The extension should provide the user interface inside VS Code and expose editor-aware operations such as:
+## 2A.4 Supabase Service Map
 
 ```text
-get_workspace()
-get_current_file()
-get_open_files()
-get_selection()
-get_diagnostics()
-get_git_status()
-get_active_editor()
-open_file()
-apply_edit()
-create_file()
-run_task()
-read_terminal_output()
+Supabase
+├── Auth
+│   ├── sign-in / sign-out
+│   ├── session management
+│   └── identity claims
+│
+├── PostgreSQL
+│   ├── profiles
+│   ├── workspace_members
+│   ├── projects
+│   ├── devices
+│   ├── workspaces
+│   ├── agents
+│   ├── tasks
+│   ├── task_dependencies
+│   ├── task_runs
+│   ├── executions
+│   ├── approvals
+│   ├── artifacts
+│   ├── audit_events
+│   ├── task_state_history
+│   ├── idempotency_keys
+│   └── other runtime metadata
+│
+├── RLS
+│   ├── tenant/workspace isolation
+│   ├── user ownership checks
+│   ├── role-based access
+│   └── privileged server-only paths
+│
+├── Realtime
+│   ├── task updates
+│   ├── agent status
+│   ├── approvals
+│   ├── device presence
+│   └── execution events where useful
+│
+├── Storage
+│   ├── reports
+│   ├── logs
+│   ├── generated artifacts
+│   └── larger binary objects
+│
+└── Edge Functions
+    ├── webhooks
+    ├── lightweight APIs
+    ├── bounded automation
+    └── database-adjacent functions
 ```
 
-The extension should not itself contain the full orchestration engine. It should act as the editor-facing component of the local node.
+Not every table must be exposed directly to browser clients. Sensitive state should remain behind the Python control plane or server-side functions even when stored in Supabase.
 
-### Local Agent Bridge
+## 2A.5 Authentication and Identity Model
 
-The bridge should be a separate local service responsible for:
+Supabase Auth is the canonical production identity provider.
 
-- maintaining the secure connection to the cloud
-- authenticating the device
-- validating requested actions
-- mapping project IDs to local workspaces
-- enforcing path restrictions
-- enforcing command restrictions
-- invoking local tools
-- returning structured results
-- collecting local execution telemetry
-- handling temporary disconnection and reconnection
+```text
+User
+  ↓
+Supabase Auth
+  ↓
+JWT / session
+  ↓
+Next.js / API client
+  ↓
+Authenticated control-plane request
+  ↓
+RLS + application authorization
+```
 
-## 2A.5 Outbound-Only Connection Pattern
+Application tables should use stable references to the Supabase Auth user identity. A `profiles` table may hold application-specific attributes while the actual authentication identity remains owned by Supabase Auth.
+
+The development JWT endpoint may exist only as a local testing compatibility mechanism during migration. It is not the production identity model.
+
+Never expose Supabase secret/service-role credentials to browser code, VS Code client code, or the Local Agent Bridge. Privileged Supabase credentials may be used only in trusted server-side processes that require them and must remain in deployment secrets.
+
+## 2A.6 Authorization and RLS Model
+
+RLS is a first-class security layer.
+
+The intended hierarchy is:
+
+```text
+auth.users
+   │
+   ▼
+profiles
+   │
+   ▼
+workspace_members
+   │
+   ▼
+workspaces
+   │
+   ├── projects
+   ├── devices
+   ├── tasks
+   ├── approvals
+   ├── artifacts
+   └── audit events
+```
+
+Policies should enforce at least:
+
+- a user may access only workspaces to which they belong
+- project/task visibility must respect workspace membership
+- roles must restrict read/write/approval capabilities
+- sensitive system records must not be writable directly by untrusted clients
+- service-side privileged operations must be separated from browser-facing access
+
+RLS must be tested directly, not merely assumed from application code.
+
+## 2A.7 Database Authority and Repository Boundary
+
+The application should retain a repository/service abstraction so business logic does not become coupled to Supabase client details.
+
+Preferred logical structure:
+
+```text
+Application services
+        ↓
+Repository / domain services
+        ↓
+Supabase PostgreSQL
+```
+
+A lightweight in-memory repository remains useful for deterministic unit tests. Direct PostgreSQL access can remain available for integration tests and local development, but the canonical production database is Supabase PostgreSQL.
+
+Migrations should be maintained as versioned SQL under `infra/db/` and applied to the Supabase database through the project's database deployment workflow.
+
+## 2A.8 Realtime Model
+
+Use Realtime selectively for state that benefits from live dashboard updates.
+
+Typical channels/events:
+
+```text
+task status changed
+agent status changed
+approval requested/granted/rejected
+device connected/disconnected
+execution started/completed/failed
+```
+
+Realtime should not replace durable writes or the event/audit model. The database remains authoritative; realtime is a delivery mechanism for clients.
+
+## 2A.9 Storage Model
+
+Use relational rows for structured metadata and Supabase Storage for larger blobs.
+
+```text
+Database
+  artifact_id
+  task_id
+  type
+  checksum
+  metadata
+  storage_path
+
+Supabase Storage
+  reports/...
+  logs/...
+  test-artifacts/...
+```
+
+Storage access must follow workspace/project authorization and should use short-lived signed access where appropriate. Secret-bearing files should remain on the local node or approved secret-management infrastructure rather than being copied into general artifact storage.
+
+## 2A.10 Edge Function Boundaries
+
+Edge Functions are appropriate for bounded operations such as:
+
+- authenticated webhooks
+- lightweight API transformations
+- webhook ingestion
+- simple notification fan-out
+- narrow database-adjacent operations
+
+Do **not** use Edge Functions as the primary runtime for:
+
+- long-running agent loops
+- arbitrary terminal execution
+- local filesystem access
+- browser automation
+- large model workflows
+- long-lived orchestration workers
+- privileged workstation control
+
+Those remain responsibilities of trusted control-plane/worker infrastructure.
+
+## 2A.11 Reference Topology
+
+```text
+                                INTERNET
+                                   │
+               ┌───────────────────┴──────────────────┐
+               │                                      │
+               ▼                                      ▼
+     ┌──────────────────────┐              ┌──────────────────────┐
+     │   Next.js Dashboard  │              │    VS Code Client    │
+     └──────────┬───────────┘              └──────────┬───────────┘
+                │                                     │
+                └───────────────┬─────────────────────┘
+                                │
+                         Supabase Auth
+                         / Realtime APIs
+                                │
+                                ▼
+                  ┌──────────────────────────────┐
+                  │       SUPABASE CLOUD         │
+                  │ PostgreSQL · Auth · RLS      │
+                  │ Realtime · Storage · Edge    │
+                  └──────────────┬───────────────┘
+                                 │
+                       authenticated server access
+                                 │
+                                 ▼
+                  ┌──────────────────────────────┐
+                  │     PYTHON CONTROL PLANE     │
+                  │ Ruata · Agents · Policy      │
+                  │ Tools · Approvals · Workers  │
+                  └──────────────┬───────────────┘
+                                 │
+                           outbound WSS
+                                 │
+                  ╔══════════════▼═══════════════╗
+                  ║       LOCAL DEV NODE         ║
+                  ║ VS Code · Files · Git        ║
+                  ║ Terminal · Browser · Docker  ║
+                  ╚══════════════┬═══════════════╝
+                                 │
+                                 ▼
+                              GitHub / CI
+```
+
+## 2A.12 Outbound-Only Connection Pattern
 
 Preferred network model:
 
@@ -279,10 +478,13 @@ Local Dev Node
       │
       │ outbound TLS/WebSocket
       ▼
-Cloud Gateway
+Cloud Bridge Gateway
       │
       ▼
-Control Plane
+Python Control Plane
+      │
+      ▼
+Supabase / cloud services
 ```
 
 Avoid requiring inbound Internet connectivity to the developer machine.
@@ -290,17 +492,17 @@ Avoid requiring inbound Internet connectivity to the developer machine.
 The connection should use:
 
 - TLS
-- short-lived access tokens where practical
 - device identity
+- short-lived credentials where practical
 - connection renewal
 - message authentication
 - replay protection
 - request IDs / correlation IDs
 - explicit session state
 
-## 2A.6 Device Registration
+## 2A.13 Device Registration
 
-Each development computer should be registered as a device.
+Each development computer should be registered as a device in the platform database.
 
 Example:
 
@@ -332,26 +534,11 @@ Device: Maruata-PC
 Workspace: C:\Projects\MizoramStay
 ```
 
-## 2A.7 Workspace Registration
+## 2A.14 Workspace Registration
 
 Do not grant all-agent access to an entire user profile.
 
-Projects should be explicitly registered:
-
-```text
-Project Registry
-
-MizoramStay
-C:\Projects\MizoramStay
-
-HospitalQualityPortal
-C:\Projects\HospitalQualityPortal
-
-HIMS
-C:\Projects\HIMS
-```
-
-Each workspace should have:
+Projects should be explicitly registered with:
 
 - project ID
 - local path
@@ -364,7 +551,7 @@ Each workspace should have:
 - protected files/directories
 - approval policy
 
-## 2A.8 Local Policy Example
+## 2A.15 Local Policy Example
 
 ```yaml
 project: MizoramStay
@@ -404,9 +591,9 @@ require_approval:
   - destructive-database-operation
 ```
 
-The precise allowlist/denylist strategy should be adapted to the operating system and project tooling. Path and capability restrictions should be enforced by the local bridge, not only described in prompts.
+The precise allowlist/denylist strategy should be adapted to the operating system and project tooling. Path and capability restrictions must be enforced by the local bridge, not only described in prompts.
 
-## 2A.9 Cloud Execution Mode
+## 2A.16 Cloud Execution Mode
 
 The platform should support a second execution path for tasks that do not need the user's workstation.
 
@@ -442,7 +629,9 @@ Typical cloud tasks:
 - evaluation benchmarks
 - tasks that should not touch the user's workstation
 
-## 2A.10 Dashboard Architecture
+Cloud sandbox state may use the same Supabase database for metadata, but sandbox execution remains isolated from the primary control-plane process.
+
+## 2A.17 Dashboard Architecture
 
 The dashboard should contain at least these views:
 
@@ -462,35 +651,9 @@ Evaluations
 Settings
 ```
 
-A project view should show:
+Dashboard data should use Supabase Auth for identity, the control plane for privileged operations, and Realtime for selected live state updates.
 
-```text
-Project: MizoramStay
-
-Agents
-✓ Ruata       Coordinating
-✓ Kimi        Complete
-● John        Working
-● Manasseh    Working
-○ Ian         Waiting
-
-Current task
-TASK-8432  Booking Cancellation
-
-Branch
-feature/8432-booking-cancellation
-
-Validation
-✓ Typecheck
-✓ Lint
-● Integration tests
-○ E2E
-
-Controls
-[Pause] [Stop] [Approve] [Open VS Code]
-```
-
-## 2A.11 Event Model
+## 2A.18 Event Model
 
 Use an event-driven model for state changes.
 
@@ -524,9 +687,9 @@ deployment.requested
 deployment.completed
 ```
 
-Every event should include a correlation ID so the full history of a task can be reconstructed.
+Every event should include a correlation ID so the full history of a task can be reconstructed. Durable audit events belong in Supabase PostgreSQL; Realtime is used for delivery to interested clients.
 
-## 2A.12 Request/Response Contract Between Cloud and Local Node
+## 2A.19 Request/Response Contract Between Cloud and Local Node
 
 Use structured messages rather than raw shell strings where possible.
 
@@ -563,14 +726,14 @@ Example response:
 
 For file edits, prefer structured patches or edit operations over arbitrary text replacement where feasible.
 
-## 2A.13 Execution Permissions by Agent
+## 2A.20 Execution Permissions by Agent
 
 | Capability | Ruata | Kimi | Manasseh | John | Ian |
 |---|---:|---:|---:|---:|---:|
 | Read repository | Yes | Yes | Yes | Yes | Yes |
 | Edit frontend | Limited | No | Yes | No | Tests only |
 | Edit backend | Limited | No | No | Yes | Tests only |
-| Edit database | No | No | No | Yes | Verify |
+| Edit database / Supabase | No | No | No | Yes | Verify |
 | Run terminal | Controlled | Safe/read-heavy | Yes | Yes | Yes |
 | Browser | As needed | Research | Yes | As needed | Yes |
 | Git branch | Yes | Read/create research branches | Yes | Yes | Yes |
@@ -578,11 +741,10 @@ For file edits, prefer structured patches or edit operations over arbitrary text
 | Production deploy | Approval only | No | No | No | Verify |
 | Secrets access | Brokered/minimal | No | No | Minimal | No |
 | Security scans | Trigger | Analyze | Limited | Limited | Yes |
-```
 
 Permissions should be dynamically reduced further for high-risk projects or sensitive workspaces.
 
-## 2A.14 Tool Gateway
+## 2A.21 Tool Gateway
 
 The platform should place a policy-aware gateway between agents and tools.
 
@@ -606,7 +768,7 @@ Execution
 
 This prevents the agent prompt from being the only security boundary.
 
-## 2A.15 MCP and Tool Integration
+## 2A.22 MCP and Tool Integration
 
 Use MCP where it provides a clean standardized interface to external systems such as:
 
@@ -623,7 +785,7 @@ Cloud Infrastructure
 
 Keep local, high-trust operations behind the local bridge and policy engine even when an MCP-compatible interface is used.
 
-## 2A.16 Repository State Strategy
+## 2A.23 Repository State Strategy
 
 The platform should understand at least four Git states:
 
@@ -645,18 +807,7 @@ Before an agent starts writing, Ruata should inspect:
 
 An agent should not silently overwrite unrelated user work.
 
-Recommended behavior when uncommitted changes exist:
-
-```text
-Detect changes
-     ↓
-Classify ownership
-     ├── user changes → preserve
-     ├── same-task changes → continue carefully
-     └── unknown changes → pause / request decision
-```
-
-## 2A.17 Agent Session Lifecycle
+## 2A.24 Agent Session Lifecycle
 
 Each agent run should have a lifecycle:
 
@@ -681,7 +832,9 @@ SUCCEEDED / FAILED / CANCELLED
 ARTIFACTS_SAVED
 ```
 
-## 2A.18 Failure Handling
+Session state and durable run metadata should be persisted in Supabase.
+
+## 2A.25 Failure Handling
 
 The platform should distinguish:
 
@@ -712,7 +865,7 @@ SYSTEM
 
 Only retry failures that are safe and likely to succeed on retry. Do not blindly repeat destructive operations.
 
-## 2A.19 Local Node Offline Behavior
+## 2A.26 Local Node Offline Behavior
 
 If the local node disconnects:
 
@@ -721,7 +874,7 @@ Cloud detects disconnect
         ↓
 Pause local execution tasks
         ↓
-Preserve task state
+Persist task/run state
         ↓
 Wait for reconnect
         ↓
@@ -732,7 +885,7 @@ Resume only after state validation
 
 Tasks that do not depend on the local node may continue in the cloud.
 
-## 2A.20 Security Boundary
+## 2A.27 Security Boundary
 
 The local node is a privileged boundary because it can execute commands on the user's computer.
 
@@ -754,7 +907,9 @@ Minimum requirements:
 
 The user should have a local **Stop All Agents** control independent of the cloud dashboard.
 
-## 2A.21 Emergency Controls
+Supabase credentials must also follow least privilege. Browser clients use only publishable/client credentials appropriate to their role. Secret/service credentials remain server-side.
+
+## 2A.28 Emergency Controls
 
 The local node should expose:
 
@@ -766,7 +921,7 @@ The local node should expose:
 
 The Stop action should terminate active agent-controlled processes according to a safe escalation procedure and prevent new execution until explicitly re-enabled.
 
-## 2A.22 Observability for Local Execution
+## 2A.29 Observability for Local Execution
 
 For every local operation record:
 
@@ -791,31 +946,43 @@ error information
 
 Never capture secret values in logs.
 
-## 2A.23 Recommended Technology Topology
-
-A practical first implementation can use:
+## 2A.30 Recommended Technology Topology
 
 ```text
 Dashboard
 → Next.js / TypeScript
+→ Supabase Auth client
+→ Supabase Realtime where appropriate
 
-Cloud API / Orchestrator
+Cloud Control Plane
 → Python / FastAPI
+→ Supabase server-side database access
+→ Long-running worker processes
 
 Agent Runtime
-→ OpenAI Agents SDK or equivalent agent runtime
+→ OpenAI Agents SDK or equivalent provider-neutral runtime
 
 Database
-→ PostgreSQL / Supabase
+→ Supabase PostgreSQL
+→ SQL migrations under infra/db/
+
+Authentication
+→ Supabase Auth
+
+Authorization
+→ PostgreSQL RLS + application-level policy checks
 
 Realtime
-→ WebSocket / Server-Sent Events
-
-Task Queue
-→ Redis or managed queue
+→ Supabase Realtime + control-plane events
 
 Artifacts
-→ Object storage
+→ Supabase Storage where appropriate
+
+Serverless APIs
+→ Supabase Edge Functions for bounded operations
+
+Task Queue
+→ Managed queue / Redis only where required by workload
 
 Local Node
 → Python or Node.js service
@@ -833,9 +1000,9 @@ CI/CD
 → GitHub Actions
 ```
 
-These are implementation choices, not hard dependencies. The platform should keep model, agent, and tool interfaces replaceable.
+Supabase is the canonical backend foundation. Other infrastructure components are introduced only where the workload requires capabilities not provided directly by Supabase.
 
-## 2A.24 Recommended Hosting Model
+## 2A.31 Recommended Hosting Model
 
 A practical initial deployment could be:
 
@@ -843,33 +1010,31 @@ A practical initial deployment could be:
 Vercel
 ├── Dashboard / Next.js
 
-Managed Cloud Backend
-├── API
-├── Orchestrator
-├── WebSocket / Realtime
-└── Worker processes
+Supabase
+├── Auth
+├── PostgreSQL
+├── RLS
+├── Realtime
+├── Storage
+└── Edge Functions
 
-Supabase / PostgreSQL
-├── users
-├── projects
-├── devices
-├── agents
-├── tasks
-├── runs
-├── approvals
-├── events
-└── evaluation metadata
-
-Object Storage
-└── logs / reports / artifacts
+Managed Compute
+├── Python/FastAPI control plane
+├── Agent workers
+├── Background jobs
+└── WebSocket / bridge gateway
 
 Developer PC
 └── Local Development Node
+
+GitHub
+├── Source control
+└── GitHub Actions CI/CD
 ```
 
-The exact cloud providers can change without changing the logical architecture.
+The exact compute provider can change without changing the logical architecture. Supabase remains the canonical managed backend unless a later architecture decision explicitly replaces it.
 
-## 2A.25 Multi-Device Future State
+## 2A.32 Multi-Device Future State
 
 The architecture should support multiple execution nodes from the beginning:
 
@@ -886,7 +1051,7 @@ The architecture should support multiple execution nodes from the beginning:
           Projects       Projects       Git branches
 ```
 
-Ruata can then route a task based on:
+Supabase stores device/workspace metadata and presence-related application state; the control plane routes execution according to:
 
 - project location
 - required tools
@@ -896,7 +1061,7 @@ Ruata can then route a task based on:
 - workload duration
 - resource availability
 
-## 2A.26 Human Control Model
+## 2A.33 Human Control Model
 
 The dashboard should make the human role explicit rather than hiding it.
 
@@ -916,30 +1081,16 @@ VIEW TESTS
 VIEW LOGS
 ```
 
-High-risk operations should surface a concise approval request:
+High-risk operations should surface a concise approval request.
+
+## 2A.34 Platform-Level Data Model
+
+A minimal production relational model should include:
 
 ```text
-Approval required
-
-Task: TASK-8432
-Operation: Apply production database migration
-Risk: HIGH
-Reason: Changes live schema
-
-Affected resources:
-- production database
-- booking table
-
-[Approve] [Reject]
-```
-
-## 2A.27 Platform-Level Data Model
-
-A minimal relational model should include:
-
-```text
-users
-organizations (optional)
+auth.users                   ← Supabase Auth authority
+profiles
+workspace_members
 projects
 devices
 workspaces
@@ -948,52 +1099,60 @@ agent_versions
 agent_runs
 tasks
 task_dependencies
+executions
+tool_requests
 artifacts
 approvals
-events
-tool_requests
+events / audit_events
 policy_rules
 evaluations
 model_usage
+idempotency_keys
+task_state_history
 ```
 
 Important relationships:
 
 ```text
-User → Projects
+Auth User → Profile
+Profile → Workspace Memberships
+Workspace → Projects
+Workspace → Devices
+Workspace → Tasks
 Project → Workspaces
-Workspace → Device
 Project → Tasks
 Task → Task Dependencies
 Task → Agent Runs
 Agent Run → Tool Requests
 Task → Artifacts
 Task → Approvals
-Everything → Events
+Everything important → Audit Events
 ```
 
-## 2A.28 Build Strategy
+RLS policies must follow the ownership/membership graph and prevent direct browser access to privileged records.
+
+## 2A.35 Build Strategy
 
 Do not start with five fully autonomous agents plus a dashboard plus cloud execution plus production deployment at once.
 
-Recommended sequence:
+The backend foundation should now be established in this order:
 
 ```text
-1. Local Development Node
-2. VS Code extension
-3. Workspace / device registration
-4. Ruata control plane
-5. Task state machine
-6. Kimi
-7. John + Manasseh
-8. Ian validation pipeline
-9. Dashboard
-10. Cloud sandbox execution
-11. Advanced evaluations
-12. Increased autonomy
+1. Supabase project and environments
+2. Auth and application identity model
+3. Core PostgreSQL schema / migrations
+4. RLS policies and authorization tests
+5. Repository/service integration
+6. Realtime state propagation
+7. Storage integration
+8. Bounded Edge Functions
+9. Python control-plane integration
+10. Local Development Node
+11. Agent orchestration and tools
+12. Cloud sandbox execution
 ```
 
-This produces usable milestones and keeps the security boundary understandable.
+This makes the backend contract stable before increased agent autonomy is introduced.
 
 # 3. Agent Fleet
 
@@ -1002,7 +1161,7 @@ This produces usable milestones and keeps the security boundary understandable.
 | **Ruata** | Principal Engineering Orchestrator | Understand requirements, plan, delegate, coordinate, enforce gates, integrate results, control risk |
 | **Kimi** | Research & Architecture Engineer | Research technology and architecture questions, inspect existing systems, make technical recommendations and decisions |
 | **Manasseh** | Frontend Engineer | Build and maintain frontend UI, state, interactions, accessibility, and frontend tests |
-| **John** | Backend & Data Engineer | Build APIs, database, business logic, auth, integrations, backend tests, and data-layer security |
+| **John** | Backend & Data Engineer | Build APIs, Supabase/PostgreSQL data layer, business logic, authentication/authorization integration, backend tests, and data security |
 | **Ian** | Quality, Security & Reliability Engineer | Verify correctness, security, regression safety, performance, integration behavior, and release readiness |
 
 ---
@@ -1028,7 +1187,7 @@ Ruata is the system's control-plane agent. Ruata should coordinate the team rath
 - Allow independent work to run in parallel.
 - Track task status.
 - Resolve conflicts among agent outputs.
-- Enforce repository and project policies.
+- Enforce repository, Supabase, security, and project policies.
 - Prevent agents from modifying unrelated areas.
 - Trigger retries or repair loops after failures.
 - Decide when human approval is required.
@@ -1042,6 +1201,7 @@ Ruata is the system's control-plane agent. Ruata should coordinate the team rath
 - Perform detailed backend implementation.
 - Mark work complete merely because an agent claims it is complete.
 - Merge high-risk changes without required approval.
+- Bypass RLS or authentication controls.
 
 ## 4.4 Task Graph Example
 
@@ -1051,7 +1211,7 @@ FEATURE-142
 ├── TASK-142.1 Requirements analysis
 │       └── Kimi
 │
-├── TASK-142.2 Database changes
+├── TASK-142.2 Supabase database changes
 │       └── John
 │
 ├── TASK-142.3 API implementation
@@ -1063,7 +1223,7 @@ FEATURE-142
 ├── TASK-142.5 Frontend tests
 │       └── Manasseh
 │
-├── TASK-142.6 Backend tests
+├── TASK-142.6 Backend / RLS tests
 │       └── John
 │
 └── TASK-142.7 Integration/security review
@@ -1176,6 +1336,7 @@ Kimi should not be treated as a generic research chatbot.
 - Produce Architecture Decision Records (ADRs).
 - Define API contracts where architecture requires it.
 - Identify assumptions and unresolved questions.
+- Verify current Supabase APIs, Auth behavior, RLS semantics, Realtime behavior, Storage behavior, and deployment considerations when relevant.
 
 ## 5.3 Research Outputs
 
@@ -1226,7 +1387,7 @@ Migration considerations:
 - Which library or service is appropriate?
 - Is the existing architecture suitable for the requested feature?
 - Does an existing component/service already solve the problem?
-- What is the recommended database design?
+- What is the recommended Supabase/PostgreSQL database design?
 - What should the frontend/backend contract look like?
 - Which APIs are current or deprecated?
 - What are the security implications?
@@ -1258,7 +1419,9 @@ Manasseh owns the frontend implementation and user-facing application behavior.
 - Component development.
 - Client-side state management.
 - Forms and validation.
-- API consumption.
+- Supabase Auth client integration where appropriate.
+- Supabase Realtime subscriptions where appropriate.
+- API/control-plane consumption.
 - Loading states.
 - Empty states.
 - Error states.
@@ -1282,7 +1445,7 @@ API / Architecture Contract
   ↓
 John
   ↓
-Backend implementation
+Backend + Supabase implementation
   ↓
 Manasseh
   ↓
@@ -1317,6 +1480,7 @@ For a feature, expect:
 [ ] Keyboard behavior verified
 [ ] Form validation implemented
 [ ] API error handling implemented
+[ ] Supabase session behavior verified where applicable
 [ ] Types are correct
 [ ] Lint passes
 [ ] Tests pass
@@ -1329,16 +1493,16 @@ For a feature, expect:
 
 ## 7.1 Mission
 
-John owns backend services, APIs, databases, authentication/authorization, business logic, integrations, and backend testing.
+John owns backend services, APIs, Supabase/PostgreSQL data design, authentication/authorization integration, business logic, integrations, and backend testing.
 
 ## 7.2 Primary Responsibilities
 
 - API implementation.
 - Database schema design.
 - PostgreSQL/Supabase changes.
-- Database migrations.
+- SQL migrations.
 - Row Level Security (RLS).
-- Authentication.
+- Supabase Auth integration.
 - Authorization.
 - Business logic.
 - Server-side validation.
@@ -1375,26 +1539,27 @@ John must explicitly check:
 - input validation
 - SQL injection risks
 - privilege escalation
-- secrets handling
+- service-role credential handling
 - rate limiting
-- tenant isolation where applicable
+- tenant/workspace isolation
 - transaction correctness
 - sensitive logging
 
-## 7.5 Database Change Requirements
+## 7.5 Supabase Change Requirements
 
-Database changes should normally include:
+Database/backend changes should normally include:
 
 ```text
-[ ] Migration created
-[ ] Migration reversible where appropriate
+[ ] Migration created under infra/db/
+[ ] Migration ordering verified
 [ ] Existing data considered
 [ ] Constraints verified
 [ ] Indexing considered
-[ ] RLS verified
+[ ] RLS policies created/updated
 [ ] Authorization verified
+[ ] Service-role access minimized
 [ ] Performance implications considered
-[ ] Tests updated
+[ ] Integration tests updated
 [ ] Rollout / rollback implications documented
 ```
 
@@ -1403,6 +1568,7 @@ Database changes should normally include:
 - Silently change frontend requirements.
 - Bypass authorization to make tests pass.
 - Disable RLS simply to solve implementation problems.
+- Commit service-role keys or other Supabase secrets.
 - Modify production data without required approvals.
 - Add dependencies without evaluating them.
 
@@ -1428,6 +1594,7 @@ Ian is the system's verification and quality gate. Ian should not only run tests
 - Security testing.
 - Dependency checks.
 - Secret scanning.
+- RLS/security-policy testing.
 - Performance checks.
 - Reliability checks.
 - Code review.
@@ -1460,8 +1627,9 @@ Database functions
 
 ```text
 Frontend → API
-API → Database
+API → Supabase PostgreSQL
 Authentication → API
+RLS → authenticated user roles
 External service → Application
 ```
 
@@ -1495,6 +1663,8 @@ Secrets leakage
 Unsafe dependencies
 API abuse
 Data exposure
+Incorrect RLS policies
+Service-role credential exposure
 ```
 
 ### Level 6 — Regression Testing
@@ -1568,12 +1738,14 @@ tests/AGENTS.md
 - Never disable linting or type checking.
 - Never commit secrets.
 - Preserve existing API compatibility unless explicitly approved.
+- Treat Supabase Auth, RLS, and production data changes as security-sensitive.
 
 ## Before coding
 1. Inspect repository instructions.
 2. Inspect the existing implementation.
 3. Determine the smallest appropriate change.
 4. Create an implementation plan for non-trivial work.
+5. Verify whether Supabase schema, RLS, Auth, Realtime, Storage, or Edge Functions are affected.
 
 ## After coding
 1. Run formatter.
@@ -1581,9 +1753,10 @@ tests/AGENTS.md
 3. Run type checking.
 4. Run unit tests.
 5. Run integration tests where applicable.
-6. Run end-to-end tests where applicable.
-7. Review the git diff.
-8. Report failures explicitly.
+6. Run RLS/auth tests where applicable.
+7. Run end-to-end tests where applicable.
+8. Review the git diff.
+9. Report failures explicitly.
 ```
 
 ---
@@ -1618,8 +1791,11 @@ Example:
     decisions/
         ADR-001-database.md
         ADR-002-authentication.md
+        ADR-003-supabase-platform.md
 
     research/
+        supabase-auth.md
+        supabase-rls.md
         supabase-storage.md
         payments.md
 
@@ -1688,14 +1864,7 @@ main
  └── feature/142-tests
 ```
 
-For stronger isolation, use worktrees or equivalent sandboxed workspaces:
-
-```text
-/worktrees/
-    manasseh-feature-142/
-    john-feature-142/
-    ian-feature-142/
-```
+For stronger isolation, use worktrees or equivalent sandboxed workspaces.
 
 Each agent should receive:
 
@@ -1718,7 +1887,7 @@ Recommended shared capabilities:
 GitHub
 Filesystem
 Terminal / shell
-Database
+Supabase / PostgreSQL
 Browser
 Documentation/search
 Testing
@@ -1739,6 +1908,7 @@ Filesystem metadata
 Test reports
 Project memory
 CI status
+Supabase task/project metadata
 ```
 
 ## 13.2 Kimi Tools
@@ -1750,6 +1920,7 @@ Repository inspection
 Package metadata
 Research sources
 Architecture artifacts
+Supabase documentation
 ```
 
 ## 13.3 Manasseh Tools
@@ -1762,6 +1933,7 @@ Browser
 Playwright / browser automation
 Visual inspection
 Frontend test tools
+Supabase client integration as permitted by frontend contracts
 ```
 
 ## 13.4 John Tools
@@ -1771,9 +1943,11 @@ Filesystem
 GitHub
 Terminal
 Supabase / PostgreSQL
+Supabase CLI
 API tooling
 Backend test tools
 Logs
+RLS/auth test tooling
 ```
 
 ## 13.5 Ian Tools
@@ -1788,6 +1962,7 @@ Dependency audit
 CI
 Logs
 Performance tooling
+Supabase/RLS/auth verification tooling
 ```
 
 ---
@@ -1806,6 +1981,7 @@ search repository
 research
 analyze
 run safe read-only commands
+inspect approved Supabase metadata
 ```
 
 ## Level 2 — Write / Implement
@@ -1818,6 +1994,7 @@ write tests
 create branches
 create migrations
 update artifacts
+implement approved Supabase schema/RLS changes
 ```
 
 ## Level 3 — Execute / Deploy
@@ -1848,16 +2025,19 @@ Automate where practical:
 - small UI changes
 - tests
 - non-functional refactors
+- local development database changes in isolated environments
 
 ## Medium Risk
 
 Require stronger review:
 
 - database schema changes
+- RLS changes
 - authentication changes
 - API modifications
 - dependency upgrades
 - business logic changes
+- Realtime/Storage authorization changes
 
 ## High Risk
 
@@ -1867,10 +2047,11 @@ Human approval should be mandatory:
 - destructive migrations
 - production deployment
 - payment logic
-- credentials
+- credentials/service-role access
 - security configuration
 - infrastructure modifications
 - data deletion
+- changes to production RLS policies with broad impact
 
 ---
 
@@ -2000,6 +2181,7 @@ Measure:
 - performance regressions
 - build stability
 - deployment failures
+- RLS/auth regression rate
 
 ## 19.2 Agent Evaluation
 
@@ -2042,9 +2224,10 @@ Approval events
 Duration
 Token/cost metrics
 Final outcome
+Supabase request/operation metadata where safe
 ```
 
-This is essential for debugging agent behavior and improving prompts, routing, policies, and models.
+Never capture secret values in logs.
 
 ---
 
@@ -2065,6 +2248,9 @@ Security should be built into the platform rather than added later.
 - human approval for high-risk actions
 - audit logs
 - reversible changes where practical
+- Supabase RLS on user-facing tables
+- Auth/session validation
+- strict separation of publishable and privileged Supabase credentials
 
 ## 21.2 Credential Model
 
@@ -2082,28 +2268,56 @@ Ruata       → orchestration + metadata + controlled GitHub operations
 
 Production privileges should be separated.
 
+Supabase service-role/secret credentials are trusted server-side credentials and must never be bundled into public frontend assets, browser code, the VS Code extension, or the local bridge.
+
 ---
 
 # 22. Recommended Repository Architecture
 
 ```text
-my-project/
+ai_agents/
 ├── AGENTS.md
 ├── README.md
+├── AI_Software_Development_Agent_Team_Architecture.md
+├── AI Software Development Agent Team — Development Roadmap.md
 ├── .ai/
 │   ├── architecture/
 │   ├── decisions/
 │   ├── research/
 │   ├── tasks/
 │   └── task-state/
-├── frontend/
-├── backend/
-├── database/
+├── apps/
+│   └── dashboard/
+├── agents/
+├── services/
+│   ├── control_plane/
+│   ├── agents/
+│   ├── orchestrator/
+│   ├── persistence/
+│   ├── identity/
+│   ├── approval/
+│   ├── policy/
+│   ├── tool_gateway/
+│   ├── bridge/
+│   ├── git/
+│   ├── sandbox/
+│   └── observability/
+├── packages/
+│   └── schemas/
+├── local/
+│   └── bridge/
+├── vscode-extension/
+├── config/
+├── infra/
+│   ├── db/                 Supabase/PostgreSQL migrations
+│   └── docker-compose.yml  Optional local infrastructure
+├── evaluations/
 ├── tests/
-└── ...
+├── docs/
+└── .github/workflows/
 ```
 
-The AI layer should remain closely connected to the actual source repository but should not replace standard software-engineering structure.
+Local Docker PostgreSQL/Redis may be used for development experiments where necessary, but it is not the production source of truth.
 
 ---
 
@@ -2111,10 +2325,15 @@ The AI layer should remain closely connected to the actual source repository but
 
 ```text
                     ┌────────────────────┐
-                    │      Ruata UI      │
+                    │    Dashboard/UI     │
                     └─────────┬──────────┘
                               │
-                        Orchestrator
+                     Supabase Auth/session
+                              │
+                    ┌─────────▼──────────┐
+                    │  Python Control    │
+                    │  Plane / Ruata     │
+                    └─────────┬──────────┘
                               │
                     ┌─────────▼──────────┐
                     │   Agent Runtime    │
@@ -2132,12 +2351,14 @@ The AI layer should remain closely connected to the actual source repository but
                               │
                          CI / Tests
                               │
-                         GitHub PR
+                         GitHub / Release
                               │
                             Human
+                              │
+                    Supabase durable state
 ```
 
-A practical implementation can use an agent SDK, structured tool calls, MCP-compatible tools, isolated sandboxes/worktrees, CI, and a persistent task store.
+A practical implementation can use an agent SDK, structured tool calls, MCP-compatible tools, isolated sandboxes/worktrees, CI, and Supabase-backed persistence/auth.
 
 ---
 
@@ -2174,38 +2395,44 @@ Agent → Ian → Ruata → mandatory human approval → execution
 1. HUMAN
    Provides requirement
 
-2. RUATA
+2. SUPABASE AUTH
+   Establishes authenticated user context
+
+3. RUATA
    Analyzes request and repository
 
-3. KIMI (when required)
+4. KIMI (when required)
    Researches and creates technical decisions
 
-4. RUATA
+5. RUATA
    Creates task graph and acceptance criteria
 
-5. JOHN / MANASSEH
-   Implement backend and frontend work
+6. JOHN / MANASSEH
+   Implement backend/frontend work
 
-6. IAN
+7. SUPABASE
+   Persists task/run state and enforces application RLS boundaries
+
+8. IAN
    Runs continuous validation
 
-7. FAIL?
+9. FAIL?
    Ruata creates repair loop
 
-8. PASS
+10. PASS
    Full integration, regression and security validation
 
-9. RUATA
+11. RUATA
    Reviews overall task status
 
-10. HUMAN
-    Approves consequential changes
+12. HUMAN
+   Approves consequential changes
 
-11. GIT / CI
-    Merge and deploy according to policy
+13. GIT / CI
+   Merge and deploy according to policy
 
-12. PROJECT MEMORY
-    Store durable decisions and lessons learned
+14. PROJECT MEMORY
+   Store durable decisions and lessons learned
 ```
 
 ---
@@ -2226,6 +2453,7 @@ Each agent prompt should specify:
 10. Escalation rules.
 11. Error-handling rules.
 12. Repository instructions.
+13. Supabase access boundaries when applicable.
 
 Avoid giant prompts containing every project-specific fact. Put stable project knowledge into repository artifacts such as `AGENTS.md`, architecture documents, ADRs, and project memory.
 
@@ -2300,6 +2528,14 @@ Record agent behavior, tool usage, tests, failures, and outcomes.
 
 Evaluate both the software and the agent system itself.
 
+## Principle 11 — Supabase as Managed Backend Foundation
+
+Use Supabase PostgreSQL, Auth, RLS, Realtime, Storage, and bounded Edge Functions as the canonical managed backend layer unless a future architecture decision explicitly changes this standard.
+
+## Principle 12 — Control Plane Separately Scaled
+
+Do not force long-running agent orchestration, model execution, bridge sessions, or privileged local operations into database/serverless primitives that are not designed for them.
+
 ---
 
 # 29. Final Recommended Team Definition
@@ -2318,96 +2554,93 @@ Evaluate both the software and the agent system itself.
 
 ### Manasseh — Frontend Engineer
 
-**Does:** UI/UX, React/Next.js, components, state, API integration, accessibility, frontend performance, frontend tests.
+**Does:** UI/UX, React/Next.js, components, state, API integration, accessibility, frontend performance, frontend tests, and approved Supabase client integration.
 
-**Does not:** invent backend contracts independently.
+**Does not:** invent backend contracts independently or access privileged Supabase credentials.
 
 ### John — Backend & Data Engineer
 
-**Does:** APIs, business logic, PostgreSQL/Supabase, migrations, auth, authorization, integrations, observability, backend tests.
+**Does:** APIs, business logic, PostgreSQL/Supabase, migrations, RLS, Auth integration, authorization, integrations, observability, backend tests.
 
 **Does not:** bypass security controls to make implementation easier.
 
 ### Ian — Quality, Security & Reliability Engineer
 
-**Does:** testing, E2E, regression, security, performance, static analysis, CI validation, code review, release verification.
+**Does:** testing, E2E, regression, security, RLS/Auth validation, performance, static analysis, CI validation, code review, release verification.
 
 **Does not:** approve unresolved critical quality or security failures.
 
 ---
 
-# 30. Recommended Next Implementation Phase
+# 30. Recommended Implementation Phase Model
 
-The best next step is to build this architecture in stages rather than attempting a fully autonomous five-agent platform immediately.
+The backend platform is now defined as Supabase-first.
 
-## Phase 1 — Foundation
+## Phase A — Supabase Foundation
 
-Build:
+Build and verify:
 
-- repository instruction framework
-- project memory structure
-- Git/worktree isolation
-- common tool layer
-- structured task schema
-- task state machine
-- logging/observability
+- Supabase project(s) and environment separation
+- Auth configuration
+- profiles/workspace membership model
+- canonical PostgreSQL migrations
+- RLS policies
+- authorization test fixtures
+- server-side Supabase client/repository integration
 
-## Phase 2 — Ruata
+## Phase B — Control Plane Integration
 
-Implement:
+Build and verify:
 
-- task intake
-- planning
-- task graph creation
-- routing
-- agent lifecycle management
-- approval routing
+- authenticated control-plane requests
+- task/run persistence
+- idempotency
+- approvals
+- audit events
+- WebSocket/local-node gateway
+- application-level authorization checks
 
-## Phase 3 — Kimi
+## Phase C — Realtime / Storage / Edge
 
-Implement:
+Build and verify:
 
-- research workflow
-- architecture analysis
-- ADR generation
-- technical specification generation
+- Realtime dashboard state
+- artifact storage
+- bounded Edge Functions
+- webhook/event integrations
 
-## Phase 4 — Manasseh + John
+## Phase D — Agent Runtime
 
-Implement:
+Build and verify:
 
-- bounded coding environments
-- standard implementation workflow
-- contract-driven frontend/backend handoff
-- automated test execution
+- Ruata
+- Kimi
+- John
+- Manasseh
+- Ian
+- tool gateway
+- policy engine
+- model provider abstraction
 
-## Phase 5 — Ian
+## Phase E — Local + Cloud Execution
 
-Implement:
+Build and verify:
 
-- testing pipeline
-- security checks
-- regression suite
-- release gate
-- automated repair-loop feedback
+- Local Agent Bridge
+- VS Code extension
+- worktrees
+- cloud sandbox workers
+- reconciliation/recovery
 
-## Phase 6 — Evaluations
+## Phase F — Quality / Security / Operations
 
-Build an evaluation suite for:
+Build and verify:
 
-- feature implementation
-- bug fixing
-- refactoring
-- database changes
-- API changes
-- frontend changes
-- authentication changes
-- security-sensitive changes
-- regression handling
-
-## Phase 7 — Controlled Autonomy
-
-Gradually allow more autonomous execution according to measured reliability and risk.
+- automated evaluation
+- centralized observability
+- security test suite
+- deployment automation
+- end-to-end benchmark
 
 ---
 
@@ -2419,6 +2652,13 @@ Gradually allow more autonomous execution according to measured reliability and 
                   ┌────────▼────────┐
                   │ AGENTS DASHBOARD│
                   └────────┬────────┘
+                           │
+                     Supabase Auth
+                           │
+                           ▼
+                    SUPABASE PLATFORM
+               Auth · PostgreSQL · RLS
+               Realtime · Storage · Edge
                            │
                            ▼
                     CLOUD CONTROL PLANE
@@ -2436,8 +2676,7 @@ Gradually allow more autonomous execution according to measured reliability and 
                            │
                     PASS / FAIL / FIX
                            │
-                           ▼
-                    HUMAN APPROVAL
+                     HUMAN APPROVAL
                            │
                      ┌─────┴─────┐
                      │           │
@@ -2468,7 +2707,10 @@ The strongest implementation of this five-agent concept is not five equal autono
 - **Manasseh owns the frontend.**
 - **John owns the backend and data layer.**
 - **Ian acts as the independent verification and security gate.**
+- **Supabase provides the managed production backend foundation: Auth, PostgreSQL, RLS, Realtime, Storage, and bounded Edge Functions.**
+- **The Python control plane provides orchestration, agent runtime coordination, policy, approvals, long-running workers, and the local-bridge gateway.**
+- **The Local Agent Bridge remains the workstation security boundary.**
 - **Git, CI, structured artifacts, repository instructions, and project memory provide the shared engineering infrastructure.**
 - **Humans remain the final authority for consequential changes.**
 
-This structure should scale substantially better than a simple linear “agent-to-agent conversation” architecture and provides a clear path from assisted coding to controlled, semi-autonomous software engineering.
+This architecture provides a clear path from assisted coding to controlled, semi-autonomous software engineering without making the database, serverless layer, or model provider responsible for functions they should not own.
