@@ -1,0 +1,31 @@
+version: 1
+
+agents:
+  ruata:
+    max_risk: medium
+    tools: [workspace.info, git.status, git.diff, task.inspect]
+  kimi:
+    max_risk: medium
+    tools: [workspace.info, file.read, documentation.search, web.search]
+  manasseh:
+    max_risk: medium
+    tools: [workspace.info, file.read, file.write, file.patch, git.status, git.diff, terminal.run, test.run, browser.run]
+  john:
+    max_risk: high
+    tools: [workspace.info, file.read, file.write, file.patch, git.status, git.diff, terminal.run, test.run, database.query]
+  ian:
+    max_risk: medium
+    tools: [workspace.info, file.read, git.status, git.diff, terminal.run, test.run, security.scan, browser.run]
+
+risk_actions:
+  low: automatic
+  medium: policy_and_validation
+  high: human_approval
+  critical: explicit_human_approval
+
+blocked_paths:
+  - .env
+  - .env.*
+  - credentials/**
+  - secrets/**
+  - private_keys/**
