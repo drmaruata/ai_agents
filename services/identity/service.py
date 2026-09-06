@@ -7,6 +7,8 @@ import secrets
 
 from packages.schemas.domain import Device, DeviceStatus, Workspace
 
+from .repository import IdentityRepository, InMemoryIdentityRepository
+
 
 @dataclass(slots=True)
 class Enrollment:
@@ -16,15 +18,12 @@ class Enrollment:
 
 
 class IdentityService:
-    """Development identity/device registry.
+    """Identity and workstation registry with pluggable persistence."""
 
-    Production persistence is provided by the Phase 3 database migration; this
-    service keeps the interface deterministic while authentication wiring evolves.
-    """
-
-    def __init__(self) -> None:
-        self.devices: dict[str, Device] = {}
-        self.workspaces: dict[str, Workspace] = {}
+    def __init__(self, repository: IdentityRepository | None = None) -> None:
+        self.repository = repository or InMemoryIdentityRepository()
+        self.devices: dict[str, Device] = {item.device_id: item for item in self.repository.list_devices()}
+        self.workspaces: dict[str, Workspace] = {item.workspace_id: item for item in self.repository.list_workspaces()}
         self.enrollments: dict[str, Enrollment] = {}
 
     def create_enrollment_code(self, user_id: str, ttl_minutes: int = 10) -> str:
@@ -62,16 +61,29 @@ class IdentityService:
             bridge_version=bridge_version,
             last_seen=now,
         )
-        self.devices[device_id] = device
+        persisted = self.repository.save_device(device)
+        self.devices[device_id] = persisted
         del self.enrollments[key]
-        return device
+        return persisted.model_copy(deep=True)
+
+    def update_device_status(self, device_id: str, status: DeviceStatus, *, last_seen: datetime | None = None) -> Device:
+        device = self.devices.get(device_id)
+        if device is None:
+            raise ValueError("Device is not registered")
+        device.status = status
+        device.last_seen = last_seen or datetime.now(timezone.utc)
+        persisted = self.repository.save_device(device)
+        self.devices[device_id] = persisted
+        return persisted.model_copy(deep=True)
 
     def register_workspace(self, workspace: Workspace) -> Workspace:
         if workspace.device_id not in self.devices:
             raise ValueError("Device is not registered")
         workspace.registered = True
-        self.workspaces[workspace.workspace_id] = workspace
-        return workspace
+        workspace.updated_at = datetime.now(timezone.utc)
+        persisted = self.repository.save_workspace(workspace)
+        self.workspaces[workspace.workspace_id] = persisted
+        return persisted.model_copy(deep=True)
 
     @staticmethod
     def _hash(value: str) -> str:
