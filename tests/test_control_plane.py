@@ -26,6 +26,7 @@ def test_agent_registry() -> None:
 def test_create_task() -> None:
     response = client.post(
         "/api/tasks",
+        headers={"Idempotency-Key": "test-task-1"},
         json={
             "project_id": "demo",
             "title": "Scaffold task",
@@ -37,3 +38,16 @@ def test_create_task() -> None:
     body = response.json()
     assert body["task_id"].startswith("TASK-")
     assert body["status"] == "backlog"
+
+    retry = client.post(
+        "/api/tasks",
+        headers={"Idempotency-Key": "test-task-1"},
+        json={
+            "project_id": "demo",
+            "title": "Scaffold task",
+            "description": "Create the initial task",
+            "risk_level": "low",
+        },
+    )
+    assert retry.status_code == 200
+    assert retry.json()["task_id"] == body["task_id"]
