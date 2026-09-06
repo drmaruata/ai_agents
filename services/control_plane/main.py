@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, Field
 
 from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, Task, TaskStatus, utc_now
+from services.orchestrator.service import OrchestrationService
 from services.persistence.repository import InMemoryRepository, PostgresRepository, Repository
 
 from .auth import authenticate, issue_dev_token
@@ -29,7 +30,8 @@ class TaskTransition(BaseModel):
 
 
 repository: Repository = PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
-app = FastAPI(title="Ruata Control Plane", version="0.2.0")
+orchestrator = OrchestrationService(repository)
+app = FastAPI(title="Ruata Control Plane", version="0.3.0")
 connections: set[WebSocket] = set()
 
 
@@ -71,6 +73,23 @@ async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate))
     )
     await broadcast({"event": "task.created", "task": task.model_dump(mode="json")})
     return task
+
+
+@app.post("/api/tasks/{task_id}/plan", response_model=list[Task])
+async def plan_task(task_id: str, _: str = Depends(authenticate)) -> list[Task]:
+    task = repository.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status == TaskStatus.BACKLOG:
+        task = repository.transition_task(task.task_id, TaskStatus.ANALYZING, task.version)
+        if "research" in task.title.lower() or "research" in task.description.lower():
+            task = repository.transition_task(task.task_id, TaskStatus.RESEARCH, task.version)
+            task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version)
+        else:
+            task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version)
+    children = orchestrator.plan_task(task)
+    await broadcast({"event": "task.planned", "task_id": task_id, "children": [item.model_dump(mode="json") for item in children]})
+    return children
 
 
 @app.get("/api/tasks", response_model=list[Task])
@@ -123,15 +142,13 @@ async def events(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/bridge")
 async def bridge(websocket: WebSocket) -> None:
-    # Phase 4 transport endpoint. Authentication and command routing are completed
-    # by the bridge protocol/policy layers; fail closed if a shared dev token is set.
     provided = websocket.query_params.get("token")
     if settings.local_bridge_token and provided != settings.local_bridge_token:
         await websocket.close(code=1008, reason="unauthorized")
         return
     await websocket.accept()
     try:
-        await websocket.send_json({"event": "bridge.ready"})
+        await websocket.send_json({"event": "bridge.ready", "protocol": "1"})
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
