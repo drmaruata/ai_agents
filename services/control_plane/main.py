@@ -8,11 +8,13 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, RiskLevel, Task, TaskStatus, Workspace, utc_now
+from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, ApprovalStatus, RiskLevel, Task, TaskStatus, Workspace, utc_now
 from services.agents.runtime import AgentRuntime
 from services.agents.service import AgentExecutionService
+from services.approval.service import ApprovalService
 from services.bridge.manager import BridgeConnectionManager
 from services.identity.service import IdentityService
+from services.observability.events import emit
 from services.orchestrator.service import OrchestrationService
 from services.persistence.repository import InMemoryRepository, PostgresRepository, Repository
 from services.policy.defaults import DEFAULT_POLICIES
@@ -53,6 +55,11 @@ class BridgeExecuteRequest(BaseModel):
     risk_level: RiskLevel = RiskLevel.LOW
 
 
+class ApprovalDecision(BaseModel):
+    approved: bool
+    reason: str | None = None
+
+
 class EnrollmentComplete(BaseModel):
     code: str = Field(min_length=1)
     device_id: str = Field(min_length=1)
@@ -77,14 +84,9 @@ agent_execution = AgentExecutionService(repository, AgentRuntime(settings.model_
 identity = IdentityService()
 bridge_manager = BridgeConnectionManager()
 policy_engine = PolicyEngine(DEFAULT_POLICIES)
-app = FastAPI(title="Ruata Control Plane", version="0.6.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+approvals = ApprovalService()
+app = FastAPI(title="Ruata Control Plane", version="0.7.0")
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 event_connections: set[WebSocket] = set()
 
 
@@ -112,14 +114,49 @@ def agents(_: str = Depends(authenticate)) -> list[dict[str, str]]:
 
 
 @app.post("/api/agents/run")
-async def run_agent(payload: AgentRunCreate, _: str = Depends(authenticate)) -> dict[str, Any]:
+async def run_agent(payload: AgentRunCreate, user_id: str = Depends(authenticate)) -> dict[str, Any]:
     if repository.get_task(payload.task_id) is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    emit("agent.run.requested", actor=user_id, task_id=payload.task_id, agent=payload.agent.value)
     try:
         run, output = await agent_execution.run(task_id=payload.task_id, agent=payload.agent, prompt=payload.prompt)
     except Exception as exc:
+        emit("agent.run.failed", actor=payload.agent.value, task_id=payload.task_id, error=str(exc))
         raise HTTPException(status_code=502, detail=f"Agent execution failed: {exc}") from exc
+    emit("agent.run.completed", actor=payload.agent.value, task_id=payload.task_id, run_id=run.run_id)
     return {"run": run.model_dump(mode="json"), "output": output}
+
+
+@app.post("/api/approvals/request")
+def request_approval(task_id: str, action: str, risk_level: RiskLevel = RiskLevel.HIGH, user_id: str = Depends(authenticate)) -> dict[str, Any]:
+    if repository.get_task(task_id) is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        approval = approvals.request(task_id=task_id, action=action, risk_level=risk_level, requested_by=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    emit("approval.requested", actor=user_id, task_id=task_id, approval_id=approval.approval_id, risk_level=risk_level.value)
+    return approval.model_dump(mode="json")
+
+
+@app.get("/api/approvals")
+def list_approvals(status: ApprovalStatus | None = None, _: str = Depends(authenticate)) -> list[dict[str, Any]]:
+    values = approvals.approvals.values()
+    if status:
+        values = [item for item in values if item.status == status]
+    return [item.model_dump(mode="json") for item in values]
+
+
+@app.post("/api/approvals/{approval_id}/decide")
+def decide_approval(approval_id: str, payload: ApprovalDecision, user_id: str = Depends(authenticate)) -> dict[str, Any]:
+    try:
+        approval = approvals.decide(approval_id, approved=payload.approved, decided_by=user_id, reason=payload.reason)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Approval not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    emit("approval.decided", actor=user_id, task_id=approval.task_id, approval_id=approval.approval_id, status=approval.status.value)
+    return approval.model_dump(mode="json")
 
 
 @app.post("/api/devices/enrollment-code")
@@ -130,15 +167,7 @@ def create_enrollment(_: str = Depends(authenticate)) -> dict[str, str]:
 @app.post("/api/devices/enroll")
 def enroll_device(payload: EnrollmentComplete) -> dict[str, Any]:
     try:
-        device = identity.enroll_device(
-            code=payload.code,
-            device_id=payload.device_id,
-            name=payload.name,
-            platform=payload.platform,
-            hostname=payload.hostname,
-            vs_code_version=payload.vscode_version,
-            bridge_version=payload.bridge_version,
-        )
+        device = identity.enroll_device(code=payload.code, device_id=payload.device_id, name=payload.name, platform=payload.platform, hostname=payload.hostname, vs_code_version=payload.vscode_version, bridge_version=payload.bridge_version)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"device": device.model_dump(mode="json"), "status": "registered"}
@@ -165,18 +194,9 @@ def list_workspaces(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
 @app.post("/api/bridge/execute")
 async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(authenticate)) -> dict[str, Any]:
     try:
-        policy_engine.authorize(
-            PolicyContext(
-                agent=payload.agent,
-                project_id=payload.project_id,
-                workspace_id=payload.workspace_id,
-                tool_name=payload.tool,
-                risk_level=payload.risk_level,
-                relative_path=payload.args.get("path"),
-                command=" ".join(map(str, payload.args.get("command", []))) if payload.args.get("command") else None,
-            ),
-            write=payload.tool in {"file.write", "file.patch"},
-        )
+        policy_engine.authorize(PolicyContext(payload.agent, payload.project_id, payload.workspace_id, payload.tool, payload.risk_level, relative_path=payload.args.get("path"), command=shlex_join(payload.args.get("command", []))), write=payload.tool in {"file.write", "file.patch"})
+        if payload.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+            raise PolicyDenied("High-risk local actions require an approval record before execution")
         response = await bridge_manager.send_tool_request(payload.device_id, payload.tool, payload.args)
     except PolicyDenied as exc:
         repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_DENIED, actor=payload.agent.value, device_id=payload.device_id, metadata={"tool": payload.tool, "reason": str(exc)}))
@@ -185,6 +205,15 @@ async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(auth
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_EXECUTED, actor=payload.agent.value, device_id=payload.device_id, metadata={"tool": payload.tool, "ok": response.get("ok", False)}))
     return response
+
+
+def shlex_join(command: Any) -> str | None:
+    if not command:
+        return None
+    if isinstance(command, list):
+        import shlex
+        return shlex.join([str(item) for item in command])
+    return str(command)
 
 
 @app.post("/api/tasks", response_model=Task)
