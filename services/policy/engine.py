@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from fnmatch import fnmatch
-from pathlib import PurePosixPath
 import shlex
+from fnmatch import fnmatch
+from typing import Final
 
 from packages.schemas.domain import AgentRole, RiskLevel
 
@@ -35,7 +35,7 @@ class ToolPolicy:
     max_risk: RiskLevel = RiskLevel.LOW
 
 
-_RISK_ORDER = {
+_RISK_ORDER: Final = {
     RiskLevel.LOW: 0,
     RiskLevel.MEDIUM: 1,
     RiskLevel.HIGH: 2,
@@ -48,21 +48,18 @@ class PolicyEngine:
         self._policies = policies
 
     def authorize(self, context: PolicyContext, *, write: bool = False) -> None:
-        policy = next(
-            (item for item in self._policies if item.agent == context.agent),
-            None,
-        )
+        risk = RiskLevel(context.risk_level)
+        policy = next((item for item in self._policies if item.agent == context.agent), None)
         if policy is None or context.tool_name not in policy.tool_names:
             raise PolicyDenied(f"Tool denied: {context.agent.value} cannot use {context.tool_name}")
 
-        if _RISK_ORDER[context.risk_level] > _RISK_ORDER[policy.max_risk]:
-            raise PolicyDenied(
-                f"Risk level denied: {context.risk_level.value} exceeds policy maximum"
-            )
+        if _RISK_ORDER[risk] > _RISK_ORDER[policy.max_risk]:
+            raise PolicyDenied(f"Risk level denied: {risk.value} exceeds policy maximum")
 
         if context.relative_path:
+            relative = context.relative_path.replace("\\", "/").lstrip("./")
             patterns = policy.write_paths if write else policy.read_paths
-            if not any(fnmatch(context.relative_path, pattern) for pattern in patterns):
+            if not any(fnmatch(relative, pattern) for pattern in patterns):
                 raise PolicyDenied(f"Path denied by policy: {context.relative_path}")
 
         if context.command:
