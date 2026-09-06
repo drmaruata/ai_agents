@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, Task, TaskStatus, Workspace, utc_now
+from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, RiskLevel, Task, TaskStatus, Workspace, utc_now
 from services.agents.runtime import AgentRuntime
 from services.agents.service import AgentExecutionService
+from services.bridge.manager import BridgeConnectionManager
 from services.identity.service import IdentityService
 from services.orchestrator.service import OrchestrationService
 from services.persistence.repository import InMemoryRepository, PostgresRepository, Repository
+from services.policy.defaults import DEFAULT_POLICIES
+from services.policy.engine import PolicyContext, PolicyDenied, PolicyEngine
 
 from .auth import authenticate, issue_dev_token
 from .settings import settings
@@ -21,7 +26,7 @@ class TaskCreate(BaseModel):
     project_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    risk_level: str = "low"
+    risk_level: RiskLevel = RiskLevel.LOW
     acceptance_criteria: list[str] = Field(default_factory=list)
     allowed_paths: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -36,6 +41,16 @@ class AgentRunCreate(BaseModel):
     task_id: str = Field(min_length=1)
     agent: AgentRole
     prompt: str = Field(min_length=1)
+
+
+class BridgeExecuteRequest(BaseModel):
+    device_id: str = Field(min_length=1)
+    agent: AgentRole
+    project_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    risk_level: RiskLevel = RiskLevel.LOW
 
 
 class EnrollmentComplete(BaseModel):
@@ -60,8 +75,17 @@ repository: Repository = PostgresRepository(settings.database_url) if settings.d
 orchestrator = OrchestrationService(repository)
 agent_execution = AgentExecutionService(repository, AgentRuntime(settings.model_name))
 identity = IdentityService()
-app = FastAPI(title="Ruata Control Plane", version="0.5.0")
-connections: set[WebSocket] = set()
+bridge_manager = BridgeConnectionManager()
+policy_engine = PolicyEngine(DEFAULT_POLICIES)
+app = FastAPI(title="Ruata Control Plane", version="0.6.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+event_connections: set[WebSocket] = set()
 
 
 @app.get("/health")
@@ -122,7 +146,7 @@ def enroll_device(payload: EnrollmentComplete) -> dict[str, Any]:
 
 @app.get("/api/devices")
 def list_devices(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
-    return [device.model_dump(mode="json") for device in identity.devices.values()]
+    return [device.model_dump(mode="json") | {"bridge_connected": device.device_id in bridge_manager.connections} for device in identity.devices.values()]
 
 
 @app.post("/api/workspaces", response_model=Workspace)
@@ -136,6 +160,31 @@ def register_workspace(payload: WorkspaceRegister, _: str = Depends(authenticate
 @app.get("/api/workspaces")
 def list_workspaces(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
     return [workspace.model_dump(mode="json") for workspace in identity.workspaces.values()]
+
+
+@app.post("/api/bridge/execute")
+async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(authenticate)) -> dict[str, Any]:
+    try:
+        policy_engine.authorize(
+            PolicyContext(
+                agent=payload.agent,
+                project_id=payload.project_id,
+                workspace_id=payload.workspace_id,
+                tool_name=payload.tool,
+                risk_level=payload.risk_level,
+                relative_path=payload.args.get("path"),
+                command=" ".join(map(str, payload.args.get("command", []))) if payload.args.get("command") else None,
+            ),
+            write=payload.tool in {"file.write", "file.patch"},
+        )
+        response = await bridge_manager.send_tool_request(payload.device_id, payload.tool, payload.args)
+    except PolicyDenied as exc:
+        repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_DENIED, actor=payload.agent.value, device_id=payload.device_id, metadata={"tool": payload.tool, "reason": str(exc)}))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ConnectionError, TimeoutError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_EXECUTED, actor=payload.agent.value, device_id=payload.device_id, metadata={"tool": payload.tool, "ok": response.get("ok", False)}))
+    return response
 
 
 @app.post("/api/tasks", response_model=Task)
@@ -191,36 +240,44 @@ async def transition_task(task_id: str, payload: TaskTransition, user_id: str = 
 @app.websocket("/ws/events")
 async def events(websocket: WebSocket) -> None:
     await websocket.accept()
-    connections.add(websocket)
+    event_connections.add(websocket)
     try:
         await websocket.send_json({"event": "connection.ready", "at": utc_now().isoformat()})
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        connections.discard(websocket)
+        event_connections.discard(websocket)
 
 
 @app.websocket("/ws/bridge")
 async def bridge(websocket: WebSocket) -> None:
-    provided = websocket.query_params.get("token")
-    if settings.local_bridge_token and provided != settings.local_bridge_token:
+    device_id = websocket.query_params.get("device_id")
+    provided = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not device_id or not provided or (settings.local_bridge_token and provided != settings.local_bridge_token):
         await websocket.close(code=1008, reason="unauthorized")
         return
     await websocket.accept()
+    await bridge_manager.register(device_id, websocket)
+    if device_id in identity.devices:
+        identity.devices[device_id].status = "online"
+        identity.devices[device_id].last_seen = utc_now()
     try:
-        await websocket.send_json({"event": "bridge.ready", "protocol": "1"})
+        await websocket.send_json({"event": "bridge.ready", "protocol": "1", "device_id": device_id})
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            bridge_manager.resolve_response(json.loads(raw))
     except WebSocketDisconnect:
-        return
+        bridge_manager.unregister(device_id, websocket)
+        if device_id in identity.devices:
+            identity.devices[device_id].status = "offline"
 
 
 async def broadcast(message: dict[str, Any]) -> None:
     stale: list[WebSocket] = []
-    for connection in connections:
+    for connection in event_connections:
         try:
             await connection.send_json(message)
         except Exception:
             stale.append(connection)
     for connection in stale:
-        connections.discard(connection)
+        event_connections.discard(connection)
