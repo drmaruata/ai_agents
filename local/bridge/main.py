@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from packages.schemas.domain import AgentRole, RiskLevel
 from services.policy.defaults import DEFAULT_POLICIES
@@ -21,15 +22,7 @@ class WorkspacePolicyError(RuntimeError):
 class LocalAgentBridge:
     """Secure workstation execution boundary."""
 
-    def __init__(
-        self,
-        workspace: str,
-        *,
-        agent: AgentRole = AgentRole.RUATA,
-        project_id: str = "local",
-        workspace_id: str = "local-workspace",
-        allowed_paths: list[str] | None = None,
-    ) -> None:
+    def __init__(self, workspace: str, *, agent: AgentRole = AgentRole.RUATA, project_id: str = "local", workspace_id: str = "local-workspace", allowed_paths: list[str] | None = None) -> None:
         self.workspace = Path(workspace).resolve()
         self.agent = agent
         self.project_id = project_id
@@ -74,19 +67,23 @@ class BridgeProtocol:
     VERSION = "1"
 
     @classmethod
-    def request(cls, request_id: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        return {"version": cls.VERSION, "type": "tool.request", "request_id": request_id, "tool": tool, "args": args}
-
-    @classmethod
     def response(cls, request_id: str, *, ok: bool, result: Any = None, error: str | None = None) -> dict[str, Any]:
         return {"version": cls.VERSION, "type": "tool.response", "request_id": request_id, "ok": ok, "result": result, "error": error}
+
+
+def with_device_id(url: str, device_id: str) -> str:
+    parsed = urlsplit(url)
+    query = dict(parse_qsl(parsed.query))
+    query["device_id"] = device_id
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 async def run_bridge_client(url: str, token: str, bridge: LocalAgentBridge) -> None:
     import websockets
 
-    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {token}"}, ping_interval=20, ping_timeout=20, close_timeout=5) as websocket:
-        await websocket.send(json.dumps({"type": "bridge.hello", "protocol": BridgeProtocol.VERSION}))
+    target = with_device_id(url, bridge.device_id)
+    async with websockets.connect(target, additional_headers={"Authorization": f"Bearer {token}"}, ping_interval=20, ping_timeout=20, close_timeout=5) as websocket:
+        await websocket.send(json.dumps({"type": "bridge.hello", "protocol": BridgeProtocol.VERSION, "device_id": bridge.device_id}))
         async for raw in websocket:
             message = json.loads(raw)
             if message.get("type") != "tool.request":
@@ -115,11 +112,13 @@ def main() -> None:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--url", required=True)
     parser.add_argument("--token", required=True)
+    parser.add_argument("--device-id", required=True)
     parser.add_argument("--agent", default="ruata", choices=[role.value for role in AgentRole])
     parser.add_argument("--project-id", default="local")
     parser.add_argument("--workspace-id", default="local-workspace")
     args = parser.parse_args()
     bridge = LocalAgentBridge(args.workspace, agent=AgentRole(args.agent), project_id=args.project_id, workspace_id=args.workspace_id)
+    bridge.device_id = args.device_id
     asyncio.run(run_bridge_client(args.url, args.token, bridge))
 
 
