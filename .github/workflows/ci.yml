@@ -10,9 +10,25 @@ permissions:
 jobs:
   python:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ruata
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ruata"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     strategy:
       matrix:
         python-version: ["3.11", "3.13"]
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ruata
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -34,6 +50,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: apps/dashboard/package.json
       - run: npm install
       - run: npm run build
 
@@ -47,5 +65,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: vscode-extension/package.json
       - run: npm install
       - run: npm run compile
