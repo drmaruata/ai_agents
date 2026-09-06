@@ -4,7 +4,7 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -88,7 +88,7 @@ identity = IdentityService()
 bridge_manager = BridgeConnectionManager()
 policy_engine = PolicyEngine(DEFAULT_POLICIES)
 approvals = ApprovalService()
-app = FastAPI(title="Ruata Control Plane", version="0.8.0")
+app = FastAPI(title="Ruata Control Plane", version="0.9.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 event_connections: set[WebSocket] = set()
 
@@ -187,6 +187,7 @@ def register_workspace(payload: WorkspaceRegister, _: str = Depends(authenticate
         return identity.register_workspace(Workspace(**payload.model_dump()))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    
 
 
 @app.get("/api/workspaces")
@@ -220,22 +221,29 @@ async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(auth
 
 
 @app.post("/api/tasks", response_model=Task)
-async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate)) -> Task:
+async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> Task:
+    scope = f"task.create:{user_id}"
+    if idempotency_key:
+        stored = repository.get_idempotency(idempotency_key, scope)
+        if stored:
+            return Task.model_validate(stored)
     task = Task(task_id=f"TASK-{uuid4().hex[:8].upper()}", **payload.model_dump())
     repository.create_task(task)
     repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TASK_CREATED, actor=user_id, task_id=task.task_id, metadata={"project_id": task.project_id}))
+    if idempotency_key:
+        repository.put_idempotency(idempotency_key, scope, task.model_dump(mode="json"))
     await broadcast({"event": "task.created", "task": task.model_dump(mode="json")})
     return task
 
 
 @app.post("/api/tasks/{task_id}/plan", response_model=list[Task])
-async def plan_task(task_id: str, _: str = Depends(authenticate)) -> list[Task]:
+async def plan_task(task_id: str, user_id: str = Depends(authenticate)) -> list[Task]:
     task = repository.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     if task.status == TaskStatus.BACKLOG:
-        task = repository.transition_task(task.task_id, TaskStatus.ANALYZING, task.version)
-        task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version)
+        task = repository.transition_task(task.task_id, TaskStatus.ANALYZING, task.version, actor=user_id, reason="begin planning")
+        task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version, actor=user_id, reason="planning complete")
     children = orchestrator.plan_task(task)
     await broadcast({"event": "task.planned", "task_id": task_id, "children": [item.model_dump(mode="json") for item in children]})
     return children
@@ -257,7 +265,7 @@ def get_task(task_id: str, _: str = Depends(authenticate)) -> Task:
 @app.post("/api/tasks/{task_id}/transition", response_model=Task)
 async def transition_task(task_id: str, payload: TaskTransition, user_id: str = Depends(authenticate)) -> Task:
     try:
-        task = repository.transition_task(task_id, payload.status, payload.expected_version)
+        task = repository.transition_task(task_id, payload.status, payload.expected_version, actor=user_id, reason="API transition")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except RuntimeError as exc:
