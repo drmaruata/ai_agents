@@ -11,8 +11,29 @@
   "contributes": {
     "commands": [
       { "command": "ruata.connect", "title": "Ruata: Connect" },
-      { "command": "ruata.status", "title": "Ruata: Show Status" }
-    ]
+      { "command": "ruata.status", "title": "Ruata: Show Status" },
+      { "command": "ruata.stop", "title": "Ruata: Stop Local Bridge" }
+    ],
+    "configuration": {
+      "title": "Ruata AI",
+      "properties": {
+        "ruata.controlPlaneUrl": {
+          "type": "string",
+          "default": "ws://localhost:8000/ws/bridge",
+          "description": "Authenticated Ruata control-plane WebSocket endpoint."
+        },
+        "ruata.bridgeToken": {
+          "type": "string",
+          "default": "",
+          "description": "Development bridge token. Production versions should use secure credential storage."
+        },
+        "ruata.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to start the local bridge."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
