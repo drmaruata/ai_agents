@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ruata
+      POSTGRES_PASSWORD: ruata
+      POSTGRES_DB: ruata
+    ports:
+      - "5432:5432"
+    volumes:
+      - ruata_pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  ruata_pgdata:
