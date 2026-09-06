@@ -37,10 +37,13 @@ class AgentRuntime:
         return Agent(**kwargs)
 
     async def run(self, agent_id: str, prompt: str) -> str:
+        return await self.run_with_tools(agent_id, prompt, tools=[])
+
+    async def run_with_tools(self, agent_id: str, prompt: str, tools: list[Any]) -> str:
         try:
             from agents import Runner
         except ImportError as exc:
             raise AgentRuntimeError("Install openai-agents to run model-backed agents") from exc
-        agent = self.build_openai_agent(agent_id)
+        agent = self.build_openai_agent(agent_id, tools=tools)
         result = await Runner.run(agent, prompt)
         return str(result.final_output)
