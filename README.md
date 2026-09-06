@@ -12,13 +12,44 @@ The platform is designed around five specialist agents coordinated by Ruata, wit
 - **John** — Backend & Data Engineer
 - **Ian** — Quality, Security & Reliability Engineer
 
+## Current implementation status
+
+The project is under active phased development. Phases 0–8 have working foundations, with supporting implementation for the later platform phases. See the live status table in `AI Software Development Agent Team — Development Roadmap.md`.
+
+Currently implemented foundations include:
+
+- Shared domain models and task state machine.
+- PostgreSQL schema and repository abstraction.
+- Development JWT authentication primitives.
+- Device and workspace enrollment services.
+- Local Agent Bridge with workspace/path/command policy enforcement.
+- Secure outbound WebSocket bridge protocol.
+- Agent/tool policy engine and explicit high-risk approval gate.
+- Shared tool registry.
+- Ruata task planning and specialist routing.
+- Provider-neutral OpenAI Agents SDK adapter.
+- Five role-specific agent specifications.
+- Initial Next.js dashboard.
+- VS Code extension that can start/stop the local bridge.
+- Git worktree manager.
+- Docker-based local sandbox adapter.
+- GitHub Actions CI.
+- Initial Ruata evaluation fixtures/runner.
+- Structured observability events.
+
+The project is **not yet a production-ready autonomous coding platform**. Authentication persistence, cloud MCP servers, full tool implementations, production sandbox providers, comprehensive dashboard workflows, centralized observability, security testing, and the first full end-to-end benchmark are still being implemented.
+
 ## Architecture
 
 See the canonical architecture specification:
 
-`AI Software Development Agent Team — Architecture & Agent Specifications.md`
+`AI_Software_Development_Agent_Team_Architecture.md`
 
-The target operating model is:
+The development roadmap is:
+
+`AI Software Development Agent Team — Development Roadmap.md`
+
+Target operating model:
 
 ```text
 Web Dashboard
@@ -39,44 +70,75 @@ Local Agent Bridge
      +-- VS Code
      +-- Workspace / Files
      +-- Terminal
-     +-- Git
+     +-- Git / Worktrees
      +-- Browser / Playwright
      +-- Docker / local tooling
 ```
 
-The local bridge is intended to be the security boundary between cloud agents and the developer workstation. It should not expose an unrestricted inbound server.
+The local bridge is the workstation security boundary. It should not expose an unrestricted inbound server.
 
 ## Repository policy
 
-This repository uses **main-only development**. All changes are committed directly to `main`. Do not create feature branches or pull requests for routine development in this repository unless this policy is explicitly changed.
+This repository uses **main-only development**. All changes are committed directly to `main`. Do not create feature branches or pull requests for routine development unless this policy is explicitly changed.
+
+Read `AGENTS.md` before making implementation changes.
 
 ## Monorepo layout
 
 ```text
 apps/
-  dashboard/          Web dashboard scaffold
-  api/                API/application scaffold
+  dashboard/          Next.js dashboard
 agents/               Agent role specifications
-services/             Control-plane/orchestration service packages
-packages/              Shared schemas/types/tool contracts
+services/
+  control_plane/      FastAPI API/control plane
+  agents/             Model runtime and agent composition
+  orchestrator/       Ruata planning
+  persistence/        In-memory/PostgreSQL repositories
+  identity/           Device/workspace identity service
+  approval/           Human approval gate
+  policy/             Least-privilege policy engine
+  tool_gateway/       Shared tool registry
+  bridge/             Cloud-side bridge connection manager
+  git/                Git worktree management
+  sandbox/            Sandbox abstraction and local Docker adapter
+  observability/      Structured operational events
+packages/
+  schemas/            Shared domain contracts
 local/
-  bridge/             Local Agent Bridge scaffold
-vscode-extension/     VS Code integration scaffold
-infra/                 Deployment/configuration scaffolding
-evaluations/           Agent evaluation fixtures
-tests/                 Cross-service tests
-docs/                  Architecture and API documentation
+  bridge/             Developer workstation bridge
+vscode-extension/     VS Code integration
+config/               Declarative agent policies
+infra/
+  db/                 PostgreSQL schema migrations
+  docker-compose.yml  Local Postgres/Redis
+  ...                 Deployment scaffolding
+evaluations/           Agent evaluation fixtures and runners
+tests/                 Cross-service/unit/security tests
+docs/                  Architecture, API, security and operations
 ```
 
 ## Prerequisites
 
-For the current Python control-plane scaffold:
+For the Python control plane and local bridge:
 
 - **Python 3.11 or newer**
 - **Git**
 - A terminal / shell
 
-For later dashboard and VS Code work, you will additionally need the normal Node.js/npm and VS Code development toolchain. Those parts of the repository are currently scaffolds and are not yet a complete production dashboard/extension release.
+For the dashboard:
+
+- **Node.js 22 or newer**
+- npm
+
+For the VS Code integration:
+
+- VS Code
+- Node.js/npm
+- A Python executable visible to the extension
+
+For local persistence/sandbox development:
+
+- Docker Desktop or Docker Engine
 
 ## Clone the repository
 
@@ -84,29 +146,20 @@ For later dashboard and VS Code work, you will additionally need the normal Node
 git clone https://github.com/drmaruata/ai_agents.git
 cd ai_agents
 git checkout main
-```
-
-Verify that you are on `main`:
-
-```bash
 git branch --show-current
 ```
 
-It should print:
-
-```text
-main
-```
+The branch should be `main`.
 
 ## Local Python environment
-
-Create a virtual environment:
 
 ### Windows PowerShell
 
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
 ### Windows Command Prompt
@@ -114,6 +167,8 @@ py -3.11 -m venv .venv
 ```cmd
 py -3.11 -m venv .venv
 .venv\Scripts\activate.bat
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
 ### macOS / Linux
@@ -121,233 +176,269 @@ py -3.11 -m venv .venv
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-```
-
-Upgrade pip and install the project in editable mode:
-
-```bash
 python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-The current project metadata requires Python 3.11+ and includes FastAPI, Uvicorn, Pydantic, WebSockets, HTTPX, and pytest dependencies.
-
-## Configure local environment variables
-
-Copy the example environment file:
-
-### Windows PowerShell
-
-```powershell
-Copy-Item .env.example .env
-```
-
-### macOS / Linux
+## Configure local environment
 
 ```bash
 cp .env.example .env
 ```
 
-The current scaffold uses these main settings:
+On Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Set at minimum for model-backed development:
 
 ```dotenv
 ENVIRONMENT=development
-API_HOST=127.0.0.1
-API_PORT=8000
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-RUATA_CONTROL_PLANE_URL=ws://localhost:8000/ws/bridge
-RUATA_DEVICE_ID=
-RUATA_DEVICE_TOKEN=
-MODEL_PROVIDER=
-MODEL_NAME=
-MODEL_API_KEY=
-DATABASE_URL=
+JWT_SECRET=replace-with-a-long-local-development-secret
+OPENAI_API_KEY=your-key
+MODEL_PROVIDER=openai
+MODEL_NAME=your-supported-model
 ```
 
-For local development, do not commit `.env` or real credentials. Use `.env.example` as the template.
+If using the local Postgres stack:
 
-## Start the current control-plane API
+```dotenv
+DATABASE_URL=postgresql://ruata:ruata@localhost:5432/ruata
+```
 
-From the repository root, with the virtual environment activated:
+Do not commit `.env` or real credentials.
+
+## Start local infrastructure
+
+```bash
+docker compose -f infra/docker-compose.yml up -d
+```
+
+Check containers:
+
+```bash
+docker compose -f infra/docker-compose.yml ps
+```
+
+The current compose stack provides PostgreSQL and Redis for local development. Apply `infra/db/001_initial_schema.sql` and `infra/db/002_identity.sql` to PostgreSQL before running the API with `DATABASE_URL` configured.
+
+One way to apply the SQL using `psql` is:
+
+```bash
+psql postgresql://ruata:ruata@localhost:5432/ruata -f infra/db/001_initial_schema.sql
+psql postgresql://ruata:ruata@localhost:5432/ruata -f infra/db/002_identity.sql
+```
+
+## Start the control plane
+
+With `.venv` activated:
 
 ```bash
 python -m uvicorn services.control_plane.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The development API should then be available at:
+Endpoints:
 
 ```text
-http://127.0.0.1:8000
+Health: http://127.0.0.1:8000/health
+Docs:   http://127.0.0.1:8000/docs
 ```
 
-FastAPI's interactive API documentation is available at:
+In development, a temporary JWT can be requested with:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/auth/dev-token
+```
+
+Use the returned bearer token for authenticated API calls.
+
+## Start the dashboard
+
+In a second terminal:
+
+```bash
+cd apps/dashboard
+npm install
+npm run dev
+```
+
+Open:
 
 ```text
-http://127.0.0.1:8000/docs
+http://localhost:3000
 ```
 
-Health check:
-
-```text
-http://127.0.0.1:8000/health
-```
-
-The current scaffold exposes the initial control-plane endpoints for agents and tasks and an event WebSocket. These are development contracts and are expected to evolve as persistence, authentication, the policy engine, and the full bridge protocol are implemented.
+The dashboard currently reads agent/task state from the control plane and serves as the starting point for the full Agents Dashboard described in the roadmap.
 
 ## Run the tests
 
-With the virtual environment activated:
-
-```bash
-python -m pytest
-```
-
-For a more verbose run:
+From repository root:
 
 ```bash
 python -m pytest -v
 ```
 
+The current suite covers the domain state machine, Ruata planner, identity enrollment, approval behavior, and local bridge policy controls. The suite will expand as the remaining roadmap phases are implemented.
+
+## Run the Ruata evaluation fixture
+
+```bash
+python evaluations/runner.py
+```
+
+This currently validates deterministic routing scenarios. Model-quality evaluations will be added under `evaluations/ruata`, `evaluations/kimi`, `evaluations/john`, `evaluations/manasseh`, `evaluations/ian`, and `evaluations/system`.
+
 ## Local Agent Bridge
 
-The Local Agent Bridge is the workstation-side component that will eventually allow Ruata and the specialist agents to work on selected local projects through VS Code and approved development tools.
-
-Current source location:
+The Local Agent Bridge lives under:
 
 ```text
 local/bridge/
 ```
 
-The bridge is intentionally scaffolded separately from the cloud control plane. Its production design should:
+It is intended to run on the developer workstation and maintain an authenticated outbound connection to the control plane.
 
-- Maintain an authenticated **outbound** connection to the cloud control plane.
-- Register the developer device and permitted workspaces.
-- Enforce project, workspace, agent, and tool permissions.
-- Execute approved filesystem, terminal, Git, browser, and VS Code actions.
-- Return structured results and audit events.
-- Fail closed when policy is ambiguous.
-- Store credentials using OS-secure credential storage in the production implementation.
-
-The current bridge code is a scaffold, not yet the complete secure workstation agent.
-
-## VS Code integration
-
-The VS Code integration is located in:
-
-```text
-vscode-extension/
-```
-
-The planned architecture is a VS Code extension plus the Local Agent Bridge. The extension will expose editor/workspace context and safe developer actions while the bridge enforces workstation-level permissions.
-
-The production workflow is intended to be:
-
-```text
-Ruata / specialist agent
-        |
-        v
-Cloud Control Plane
-        |
-   authenticated outbound connection
-        |
-        v
-Local Agent Bridge
-        |
-        v
-VS Code Extension
-        |
-        +-- workspace files
-        +-- diagnostics
-        +-- terminal
-        +-- Git
-        +-- tests
-        +-- browser tooling
-```
-
-## Running the development stack
-
-For the current scaffold, start the pieces independently in separate terminals.
-
-### Terminal 1 — Control plane
+The current bridge CLI requires:
 
 ```bash
-source .venv/bin/activate  # macOS/Linux
-python -m uvicorn services.control_plane.main:app --reload --host 127.0.0.1 --port 8000
+python -m local.bridge.main \
+  --workspace /path/to/project \
+  --url ws://127.0.0.1:8000/ws/bridge \
+  --token YOUR_BRIDGE_TOKEN \
+  --device-id YOUR_DEVICE_ID \
+  --project-id YOUR_PROJECT_ID \
+  --workspace-id YOUR_WORKSPACE_ID
 ```
 
-On Windows PowerShell, activate `.venv` first using:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Then run the same Uvicorn command.
-
-### Terminal 2 — Tests / development commands
-
-Use this terminal for the test suite, API checks, or later local agent processes:
-
-```bash
-python -m pytest -v
-```
-
-The dashboard, full local bridge protocol, model adapters, persistent task store, and production VS Code extension are not yet wired into a single `docker compose up` or one-command development environment. That integration is part of the next implementation phases.
-
-## First end-to-end milestone
-
-The next functional target is:
+The bridge currently supports the first safe tool set:
 
 ```text
-1. Start the FastAPI control plane.
-2. Start the dashboard locally.
-3. Register a local development device/workspace.
-4. Establish an authenticated outbound bridge connection.
-5. Create a task in Ruata.
-6. Delegate a safe local tool action.
-7. Execute it in a selected workspace.
-8. Return structured execution results.
-9. Persist task/run state and test results.
-10. Validate the change through Ian's quality gates.
+file.read
+file.write
+terminal.run
+git.diff
 ```
 
-## Model providers
+Before executing a request it validates workspace scope, sensitive-path blocks, agent/tool policy, command allowlists, and risk level.
 
-Model integrations are intentionally abstracted in the scaffold. Configure provider/model information through environment variables once concrete adapters are implemented.
+## Device enrollment
 
-Do not hard-code API keys in source files, agent prompts, GitHub Actions files, or repository configuration.
+The intended development flow is:
 
-## Git workflow for this repository
+```text
+1. Start control plane.
+2. Obtain a development auth token.
+3. Request a device enrollment code.
+4. Enroll the workstation/device.
+5. Register a workspace.
+6. Configure the device ID in the VS Code extension.
+7. Start the Local Agent Bridge.
+```
 
-Because this repository is **main-only**, normal updates should be made as follows:
+The identity service is currently an application-level development implementation. Durable user/device/workspace persistence and production identity integration remain roadmap work.
+
+## VS Code extension
+
+From the extension directory:
 
 ```bash
-git checkout main
-git pull origin main
-# make changes
-python -m pytest
-git add .
-git commit -m "describe the change"
-git push origin main
+cd vscode-extension
+npm install
+npm run compile
 ```
 
-Keep commits focused and preserve a passing development state whenever practical.
+Open the extension folder in VS Code and use **Run Extension** from the Extension Development Host workflow.
 
-## Security principles
+Configure:
 
-The platform is designed around a least-privilege model.
+```text
+ruata.controlPlaneUrl
+ruata.bridgeToken
+ruata.deviceId
+ruata.pythonPath
+```
 
-- The cloud must not receive unrestricted access to the developer filesystem.
-- The local bridge should use an outbound authenticated connection rather than an open inbound port.
-- Workspaces should be explicitly registered and permission-scoped.
-- Secrets must be excluded from agent context unless explicitly required and authorized.
-- Destructive operations, production changes, credential changes, and other high-risk actions should require approval.
-- Agents must not disable tests, linting, type checking, or security controls merely to make a task pass.
-- Audit events should be retained for agent actions and policy decisions.
+Then run:
 
-## Canonical architecture document
+```text
+Ruata: Connect
+```
 
-The full system design, agent specifications, permissions, task lifecycle, execution model, security architecture, observability requirements, and staged implementation plan are maintained in:
+The extension starts the local bridge for the currently opened workspace. `Ruata: Status` reports the current workspace/device/bridge state, and `Ruata: Stop Local Bridge` terminates it.
 
-`AI Software Development Agent Team — Architecture & Agent Specifications.md`
+Production credential storage will move to VS Code/OS secure storage as the extension matures.
 
-Read that document before making architectural changes to the platform.
+## Git worktrees
+
+The project contains a worktree manager under:
+
+```text
+services/git/worktree.py
+```
+
+The intended agent isolation model is:
+
+```text
+main
+ |
+ +-- task-123-john
+ +-- task-123-manasseh
+ +-- task-123-ian
+```
+
+This repository itself remains **main-only**. Agent worktree isolation applies to the development projects being operated on by the platform, not to this repository's contribution policy.
+
+## CI
+
+GitHub Actions is configured in:
+
+```text
+.github/workflows/ci.yml
+```
+
+Pushes to `main` run Python tests across supported Python versions plus dashboard and VS Code compilation checks.
+
+## Security model
+
+The platform follows least privilege by default:
+
+- The cloud should not receive unrestricted filesystem access.
+- Local communication is outbound and authenticated.
+- Workspaces are explicitly selected and scoped.
+- `.env`, credentials, secrets, and private-key paths are blocked by default.
+- Commands use `shell=False` in the local bridge.
+- Agent/tool/path/risk policy is evaluated before execution.
+- High/critical local actions require an approval workflow.
+- Agents must not weaken tests, linting, type checks, or security controls to hide failures.
+
+See `AI_Software_Development_Agent_Team_Architecture.md` for the complete security and operating model.
+
+## Development sequence
+
+The implementation follows:
+
+`AI Software Development Agent Team — Development Roadmap.md`
+
+The intended order is:
+
+```text
+Foundation
+  -> Persistence / Identity
+  -> Local Bridge / Policy
+  -> Tools / MCP
+  -> Ruata
+  -> Kimi
+  -> John
+  -> Manasseh
+  -> Ian
+  -> VS Code / Dashboard
+  -> Git / CI
+  -> Sandboxes / Evaluations / Observability
+  -> Security Hardening
+  -> Production Deployment
+  -> End-to-End Benchmark
+```
+
+Do not skip acceptance gates merely to expose more autonomy earlier.
