@@ -1,0 +1,26 @@
+{
+  "name": "ruata-ai-development-team",
+  "displayName": "Ruata AI Development Team",
+  "description": "VS Code bridge for the Ruata hybrid AI software engineering platform",
+  "version": "0.1.0",
+  "publisher": "drmaruata",
+  "engines": { "vscode": ">=1.100.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "ruata.connect", "title": "Ruata: Connect" },
+      { "command": "ruata.status", "title": "Ruata: Show Status" }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.100.0",
+    "typescript": "^5.9.0"
+  }
+}
