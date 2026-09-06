@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from packages.schemas.domain import AgentRole, RunStatus, TaskRun
@@ -14,11 +15,14 @@ class AgentExecutionService:
         self.repository = repository
         self.runtime = runtime
 
-    async def run(self, *, task_id: str, agent: AgentRole, prompt: str) -> tuple[TaskRun, str]:
+    async def run(self, *, task_id: str, agent: AgentRole, prompt: str, tools: list[Any] | None = None) -> tuple[TaskRun, str]:
         run = TaskRun(run_id=f"RUN-{uuid4().hex[:10].upper()}", task_id=task_id, agent=agent, status=RunStatus.RUNNING, started_at=datetime.now(timezone.utc))
         self.repository.record_run(run)
         try:
-            output = await self.runtime.run(agent.value, prompt)
+            if tools:
+                result = await self.runtime.run_with_tools(agent.value, prompt, tools)
+            else:
+                result = await self.runtime.run(agent.value, prompt)
         except Exception as exc:
             run.status = RunStatus.FAILED
             run.error = str(exc)
@@ -28,4 +32,4 @@ class AgentExecutionService:
         run.status = RunStatus.SUCCEEDED
         run.finished_at = datetime.now(timezone.utc)
         self.repository.record_run(run)
-        return run, output
+        return run, result
