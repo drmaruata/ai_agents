@@ -20,9 +20,14 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       const url = config.get<string>("controlPlaneUrl", "ws://localhost:8000/ws/bridge");
       const token = config.get<string>("bridgeToken", "");
+      const deviceId = config.get<string>("deviceId", "");
       const python = config.get<string>("pythonPath", "python");
       if (!token) {
         void vscode.window.showWarningMessage("Ruata: configure ruata.bridgeToken before connecting.");
+        return;
+      }
+      if (!deviceId) {
+        void vscode.window.showWarningMessage("Ruata: configure ruata.deviceId after device enrollment.");
         return;
       }
       if (bridgeProcess) {
@@ -33,11 +38,12 @@ export function activate(context: vscode.ExtensionContext): void {
       output.appendLine(`Starting Local Agent Bridge for ${workspace}`);
       bridgeProcess = spawn(
         python,
-        ["-m", "local.bridge.main", "--workspace", workspace, "--url", url, "--token", token],
+        ["-m", "local.bridge.main", "--workspace", workspace, "--url", url, "--token", token, "--device-id", deviceId],
         { cwd: workspace, shell: false },
       );
       bridgeProcess.stdout.on("data", (data) => output.append(data.toString()));
       bridgeProcess.stderr.on("data", (data) => output.append(data.toString()));
+      bridgeProcess.on("error", (error) => output.appendLine(`Bridge process error: ${error.message}`));
       bridgeProcess.on("exit", (code) => {
         output.appendLine(`Bridge exited with code ${code ?? "unknown"}.`);
         bridgeProcess = undefined;
@@ -45,8 +51,8 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage("Ruata: local bridge started.");
     }),
     vscode.commands.registerCommand("ruata.status", async () => {
-      const workspace = workspacePath() ?? "none";
-      output.appendLine(`Workspace: ${workspace}`);
+      output.appendLine(`Workspace: ${workspacePath() ?? "none"}`);
+      output.appendLine(`Device: ${config.get<string>("deviceId", "not configured")}`);
       output.appendLine(`Bridge: ${bridgeProcess ? "running" : "stopped"}`);
       void vscode.window.showInformationMessage(`Ruata: ${bridgeProcess ? "bridge running" : "bridge stopped"}.`);
     }),
