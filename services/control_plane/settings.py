@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     database_url: str | None = None
+    supabase_url: str | None = None
+    supabase_publishable_key: str | None = None
     jwt_secret: str = "development-only-change-me"
     jwt_algorithm: str = "HS256"
     local_bridge_token: str | None = None
