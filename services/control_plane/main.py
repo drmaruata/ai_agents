@@ -46,6 +46,8 @@ class AgentRunCreate(BaseModel):
 
 
 class BridgeExecuteRequest(BaseModel):
+    task_id: str | None = None
+    approval_id: str | None = None
     device_id: str = Field(min_length=1)
     agent: AgentRole
     project_id: str = Field(min_length=1)
@@ -85,7 +87,7 @@ identity = IdentityService()
 bridge_manager = BridgeConnectionManager()
 policy_engine = PolicyEngine(DEFAULT_POLICIES)
 approvals = ApprovalService()
-app = FastAPI(title="Ruata Control Plane", version="0.7.0")
+app = FastAPI(title="Ruata Control Plane", version="0.8.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 event_connections: set[WebSocket] = set()
 
@@ -141,7 +143,7 @@ def request_approval(task_id: str, action: str, risk_level: RiskLevel = RiskLeve
 
 @app.get("/api/approvals")
 def list_approvals(status: ApprovalStatus | None = None, _: str = Depends(authenticate)) -> list[dict[str, Any]]:
-    values = approvals.approvals.values()
+    values = list(approvals.approvals.values())
     if status:
         values = [item for item in values if item.status == status]
     return [item.model_dump(mode="json") for item in values]
@@ -193,17 +195,26 @@ def list_workspaces(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
 
 @app.post("/api/bridge/execute")
 async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(authenticate)) -> dict[str, Any]:
+    task = repository.get_task(payload.task_id) if payload.task_id else None
+    if payload.task_id and task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if payload.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+        if not payload.approval_id:
+            raise HTTPException(status_code=403, detail="Approval is required for high-risk local execution")
+        approval = approvals.approvals.get(payload.approval_id)
+        if approval is None or approval.status != ApprovalStatus.APPROVED:
+            raise HTTPException(status_code=403, detail="Provided approval is not approved")
+        if payload.task_id and approval.task_id != payload.task_id:
+            raise HTTPException(status_code=403, detail="Approval does not match task")
     try:
         policy_engine.authorize(PolicyContext(payload.agent, payload.project_id, payload.workspace_id, payload.tool, payload.risk_level, relative_path=payload.args.get("path"), command=shlex_join(payload.args.get("command", []))), write=payload.tool in {"file.write", "file.patch"})
-        if payload.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
-            raise PolicyDenied("High-risk local actions require an approval record before execution")
         response = await bridge_manager.send_tool_request(payload.device_id, payload.tool, payload.args)
     except PolicyDenied as exc:
-        repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_DENIED, actor=payload.agent.value, device_id=payload.device_id, metadata={"tool": payload.tool, "reason": str(exc)}))
+        repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_DENIED, actor=payload.agent.value, task_id=payload.task_id, device_id=payload.device_id, metadata={"tool": payload.tool, "reason": str(exc)}))
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (ConnectionError, TimeoutError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_EXECUTED, actor=payload.agent.value, device_id=payload.device_id, metadata={"tool": payload.tool, "ok": response.get("ok", False)}))
+    repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TOOL_EXECUTED, actor=payload.agent.value, task_id=payload.task_id, device_id=payload.device_id, metadata={"tool": payload.tool, "ok": response.get("ok", False)}))
     return response
 
 
