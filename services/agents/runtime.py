@@ -21,15 +21,15 @@ class AgentRuntime:
         return Path(config.instructions_file).read_text(encoding="utf-8")
 
     def build_openai_agent(self, agent_id: str, tools: list[Any] | None = None):
+        config = AGENT_CONFIGS[agent_id]
+        return self.build_openai_agent_with_instructions(config.name, self.instructions(agent_id), tools=tools)
+
+    def build_openai_agent_with_instructions(self, name: str, instructions: str, *, tools: list[Any] | None = None):
         try:
             from agents import Agent
         except ImportError as exc:
             raise AgentRuntimeError("Install openai-agents to build model-backed agents") from exc
-        config = AGENT_CONFIGS[agent_id]
-        kwargs: dict[str, Any] = {
-            "name": config.name,
-            "instructions": self.instructions(agent_id),
-        }
+        kwargs: dict[str, Any] = {"name": name, "instructions": instructions}
         if self.model:
             kwargs["model"] = self.model
         if tools:
