@@ -34,6 +34,12 @@ class Repository(ABC):
     @abstractmethod
     def audit(self, event: AuditEvent) -> None: ...
 
+    @abstractmethod
+    def get_idempotency(self, key: str, scope: str) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def put_idempotency(self, key: str, scope: str, response: dict[str, Any]) -> None: ...
+
 
 class InMemoryRepository(Repository):
     def __init__(self) -> None:
@@ -41,6 +47,7 @@ class InMemoryRepository(Repository):
         self.runs: dict[str, TaskRun] = {}
         self.events: list[AuditEvent] = []
         self.state_history: list[dict[str, Any]] = []
+        self.idempotency: dict[tuple[str, str], dict[str, Any]] = {}
 
     def create_task(self, task: Task) -> Task:
         if task.task_id in self.tasks:
@@ -96,6 +103,13 @@ class InMemoryRepository(Repository):
     def audit(self, event: AuditEvent) -> None:
         self.events.append(event.model_copy(deep=True))
 
+    def get_idempotency(self, key: str, scope: str) -> dict[str, Any] | None:
+        response = self.idempotency.get((scope, key))
+        return dict(response) if response else None
+
+    def put_idempotency(self, key: str, scope: str, response: dict[str, Any]) -> None:
+        self.idempotency[(scope, key)] = dict(response)
+
 
 class PostgresRepository(Repository):
     def __init__(self, dsn: str) -> None:
@@ -120,10 +134,7 @@ class PostgresRepository(Repository):
             )
             row = cur.fetchone()
             cur.execute(
-                """
-                INSERT INTO task_state_history (history_id, task_id, from_status, to_status, version, actor, reason)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
-                """,
+                "INSERT INTO task_state_history (history_id,task_id,from_status,to_status,version,actor,reason) VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (f"HST-{task.task_id}-1", task.task_id, None, task.status.value, task.version, None, "created"),
             )
             return _row_to_task(row)
@@ -165,7 +176,7 @@ class PostgresRepository(Repository):
             updated = cur.fetchone()
             cur.execute(
                 """
-                INSERT INTO task_state_history (history_id, task_id, from_status, to_status, version, actor, reason, created_at)
+                INSERT INTO task_state_history (history_id,task_id,from_status,to_status,version,actor,reason,created_at)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (f"HST-{task_id}-{new_version}", task_id, current.status.value, status.value, new_version, actor, reason, updated_at),
@@ -191,6 +202,22 @@ class PostgresRepository(Repository):
             cur.execute(
                 "INSERT INTO audit_events (event_id,event_type,actor,task_id,device_id,metadata,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (event.event_id, event.event_type.value, event.actor, event.task_id, event.device_id, Jsonb(event.metadata), event.created_at),
+            )
+
+    def get_idempotency(self, key: str, scope: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT response FROM idempotency_keys WHERE key=%s AND scope=%s", (key, scope))
+            row = cur.fetchone()
+        return dict(row["response"]) if row else None
+
+    def put_idempotency(self, key: str, scope: str, response: dict[str, Any]) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO idempotency_keys (key,scope,response) VALUES (%s,%s,%s)
+                ON CONFLICT (key) DO NOTHING
+                """,
+                (key, scope, Jsonb(response)),
             )
 
 
