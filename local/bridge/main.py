@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import shlex
@@ -18,12 +19,7 @@ class WorkspacePolicyError(RuntimeError):
 
 
 class LocalAgentBridge:
-    """Secure workstation execution boundary.
-
-    The bridge only operates inside an explicitly registered workspace and
-    delegates authorization to the shared policy engine before touching files
-    or starting subprocesses.
-    """
+    """Secure workstation execution boundary."""
 
     def __init__(
         self,
@@ -38,9 +34,7 @@ class LocalAgentBridge:
         self.agent = agent
         self.project_id = project_id
         self.workspace_id = workspace_id
-        self.allowed_paths = [
-            (self.workspace / path).resolve() for path in (allowed_paths or ["."])
-        ]
+        self.allowed_paths = [(self.workspace / path).resolve() for path in (allowed_paths or ["."])]
         self.policy = PolicyEngine(DEFAULT_POLICIES)
 
     def resolve_path(self, relative_path: str) -> Path:
@@ -53,79 +47,30 @@ class LocalAgentBridge:
 
     def read_file(self, relative_path: str) -> str:
         path = self.resolve_path(relative_path)
-        context = PolicyContext(
-            agent=self.agent,
-            project_id=self.project_id,
-            workspace_id=self.workspace_id,
-            tool_name="file.read",
-            risk_level=RiskLevel.LOW,
-            relative_path=relative_path,
-        )
-        self.policy.authorize(context)
+        self.policy.authorize(PolicyContext(self.agent, self.project_id, self.workspace_id, "file.read", RiskLevel.LOW, relative_path=relative_path))
         return path.read_text(encoding="utf-8")
 
     def write_file(self, relative_path: str, content: str) -> Path:
         path = self.resolve_path(relative_path)
-        context = PolicyContext(
-            agent=self.agent,
-            project_id=self.project_id,
-            workspace_id=self.workspace_id,
-            tool_name="file.write",
-            risk_level=RiskLevel.MEDIUM,
-            relative_path=relative_path,
-        )
-        self.policy.authorize(context, write=True)
+        self.policy.authorize(PolicyContext(self.agent, self.project_id, self.workspace_id, "file.write", RiskLevel.MEDIUM, relative_path=relative_path), write=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
 
-    def git_diff(self) -> str:
-        return self.run_command(["git", "diff"], tool_name="git.diff", risk_level=RiskLevel.LOW)["stdout"]
-
     def run_command(self, command: list[str], *, tool_name: str = "terminal.run", risk_level: RiskLevel = RiskLevel.MEDIUM, timeout: int = 120) -> dict[str, Any]:
         if not command:
             raise ValueError("Command cannot be empty")
-        command_text = shlex.join(command)
-        context = PolicyContext(
-            agent=self.agent,
-            project_id=self.project_id,
-            workspace_id=self.workspace_id,
-            tool_name=tool_name,
-            risk_level=risk_level,
-            command=command_text,
-        )
+        context = PolicyContext(self.agent, self.project_id, self.workspace_id, tool_name, risk_level, command=shlex.join(command))
         self.policy.authorize(context)
         started = time.perf_counter()
         try:
-            completed = subprocess.run(
-                command,
-                cwd=self.workspace,
-                text=True,
-                capture_output=True,
-                timeout=timeout,
-                shell=False,
-                check=False,
-            )
+            completed = subprocess.run(command, cwd=self.workspace, text=True, capture_output=True, timeout=timeout, shell=False, check=False)
         except subprocess.TimeoutExpired as exc:
-            return {
-                "status": "timeout",
-                "exit_code": None,
-                "stdout": exc.stdout or "",
-                "stderr": exc.stderr or "",
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-            }
-        return {
-            "status": "succeeded" if completed.returncode == 0 else "failed",
-            "exit_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-        }
+            return {"status": "timeout", "exit_code": None, "stdout": exc.stdout or "", "stderr": exc.stderr or "", "duration_ms": int((time.perf_counter() - started) * 1000)}
+        return {"status": "succeeded" if completed.returncode == 0 else "failed", "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr, "duration_ms": int((time.perf_counter() - started) * 1000)}
 
 
 class BridgeProtocol:
-    """Request/response protocol used by the outbound WebSocket client."""
-
     VERSION = "1"
 
     @classmethod
@@ -138,16 +83,9 @@ class BridgeProtocol:
 
 
 async def run_bridge_client(url: str, token: str, bridge: LocalAgentBridge) -> None:
-    """Maintain an outbound authenticated WebSocket connection with fail-closed execution."""
     import websockets
 
-    async with websockets.connect(
-        url,
-        additional_headers={"Authorization": f"Bearer {token}"},
-        ping_interval=20,
-        ping_timeout=20,
-        close_timeout=5,
-    ) as websocket:
+    async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {token}"}, ping_interval=20, ping_timeout=20, close_timeout=5) as websocket:
         await websocket.send(json.dumps({"type": "bridge.hello", "protocol": BridgeProtocol.VERSION}))
         async for raw in websocket:
             message = json.loads(raw)
@@ -161,12 +99,29 @@ async def run_bridge_client(url: str, token: str, bridge: LocalAgentBridge) -> N
                     result = bridge.read_file(str(args["path"]))
                 elif tool == "file.write":
                     result = str(bridge.write_file(str(args["path"]), str(args["content"])))
-                elif tool == "git.diff":
-                    result = bridge.git_diff()
                 elif tool == "terminal.run":
                     result = bridge.run_command(list(args["command"]))
+                elif tool == "git.diff":
+                    result = bridge.run_command(["git", "diff"], tool_name="git.diff", risk_level=RiskLevel.LOW)
                 else:
                     raise PolicyDenied(f"Unsupported bridge tool: {tool}")
                 await websocket.send(json.dumps(BridgeProtocol.response(request_id, ok=True, result=result)))
             except Exception as exc:
                 await websocket.send(json.dumps(BridgeProtocol.response(request_id, ok=False, error=str(exc))))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ruata Local Agent Bridge")
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--token", required=True)
+    parser.add_argument("--agent", default="ruata", choices=[role.value for role in AgentRole])
+    parser.add_argument("--project-id", default="local")
+    parser.add_argument("--workspace-id", default="local-workspace")
+    args = parser.parse_args()
+    bridge = LocalAgentBridge(args.workspace, agent=AgentRole(args.agent), project_id=args.project_id, workspace_id=args.workspace_id)
+    asyncio.run(run_bridge_client(args.url, args.token, bridge))
+
+
+if __name__ == "__main__":
+    main()
