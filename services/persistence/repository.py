@@ -26,7 +26,7 @@ class Repository(ABC):
     def list_tasks(self, project_id: str | None = None) -> list[Task]: ...
 
     @abstractmethod
-    def transition_task(self, task_id: str, status: TaskStatus, expected_version: int) -> Task: ...
+    def transition_task(self, task_id: str, status: TaskStatus, expected_version: int, *, actor: str | None = None, reason: str | None = None) -> Task: ...
 
     @abstractmethod
     def record_run(self, run: TaskRun) -> TaskRun: ...
@@ -40,11 +40,21 @@ class InMemoryRepository(Repository):
         self.tasks: dict[str, Task] = {}
         self.runs: dict[str, TaskRun] = {}
         self.events: list[AuditEvent] = []
+        self.state_history: list[dict[str, Any]] = []
 
     def create_task(self, task: Task) -> Task:
         if task.task_id in self.tasks:
             raise ValueError(f"Task already exists: {task.task_id}")
         self.tasks[task.task_id] = task.model_copy(deep=True)
+        self.state_history.append({
+            "task_id": task.task_id,
+            "from_status": None,
+            "to_status": task.status.value,
+            "version": task.version,
+            "actor": None,
+            "reason": "created",
+            "created_at": utc_now(),
+        })
         return self.tasks[task.task_id].model_copy(deep=True)
 
     def get_task(self, task_id: str) -> Task | None:
@@ -57,16 +67,26 @@ class InMemoryRepository(Repository):
             values = [task for task in values if task.project_id == project_id]
         return [task.model_copy(deep=True) for task in values]
 
-    def transition_task(self, task_id: str, status: TaskStatus, expected_version: int) -> Task:
+    def transition_task(self, task_id: str, status: TaskStatus, expected_version: int, *, actor: str | None = None, reason: str | None = None) -> Task:
         task = self.tasks.get(task_id)
         if task is None:
             raise KeyError(task_id)
         if task.version != expected_version:
             raise RuntimeError("Task version conflict")
         validate_task_transition(task.status, status)
+        previous = task.status
         task.status = status
         task.version += 1
         task.updated_at = utc_now()
+        self.state_history.append({
+            "task_id": task_id,
+            "from_status": previous.value,
+            "to_status": status.value,
+            "version": task.version,
+            "actor": actor,
+            "reason": reason,
+            "created_at": task.updated_at,
+        })
         return task.model_copy(deep=True)
 
     def record_run(self, run: TaskRun) -> TaskRun:
@@ -98,7 +118,15 @@ class PostgresRepository(Repository):
                 """,
                 _task_params(task),
             )
-            return _row_to_task(cur.fetchone())
+            row = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO task_state_history (history_id, task_id, from_status, to_status, version, actor, reason)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (f"HST-{task.task_id}-1", task.task_id, None, task.status.value, task.version, None, "created"),
+            )
+            return _row_to_task(row)
 
     def get_task(self, task_id: str) -> Task | None:
         with self._connect() as conn, conn.cursor() as cur:
@@ -115,7 +143,7 @@ class PostgresRepository(Repository):
             rows = cur.fetchall()
         return [_row_to_task(row) for row in rows]
 
-    def transition_task(self, task_id: str, status: TaskStatus, expected_version: int) -> Task:
+    def transition_task(self, task_id: str, status: TaskStatus, expected_version: int, *, actor: str | None = None, reason: str | None = None) -> Task:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute("SELECT * FROM tasks WHERE task_id = %s FOR UPDATE", (task_id,))
             row = cur.fetchone()
@@ -125,14 +153,24 @@ class PostgresRepository(Repository):
             if current.version != expected_version:
                 raise RuntimeError("Task version conflict")
             validate_task_transition(current.status, status)
+            updated_at = utc_now()
+            new_version = expected_version + 1
             cur.execute(
                 """
-                UPDATE tasks SET status=%s, version=version+1, updated_at=%s
+                UPDATE tasks SET status=%s, version=%s, updated_at=%s
                 WHERE task_id=%s AND version=%s RETURNING *
                 """,
-                (status.value, utc_now(), task_id, expected_version),
+                (status.value, new_version, updated_at, task_id, expected_version),
             )
-            return _row_to_task(cur.fetchone())
+            updated = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO task_state_history (history_id, task_id, from_status, to_status, version, actor, reason, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (f"HST-{task_id}-{new_version}", task_id, current.status.value, status.value, new_version, actor, reason, updated_at),
+            )
+            return _row_to_task(updated)
 
     def record_run(self, run: TaskRun) -> TaskRun:
         with self._connect() as conn, conn.cursor() as cur:
