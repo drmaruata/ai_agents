@@ -6,7 +6,8 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, Task, TaskStatus, utc_now
+from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, Task, TaskStatus, Workspace, utc_now
+from services.identity.service import IdentityService
 from services.orchestrator.service import OrchestrationService
 from services.persistence.repository import InMemoryRepository, PostgresRepository, Repository
 
@@ -29,9 +30,31 @@ class TaskTransition(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class EnrollmentRequest(BaseModel):
+    device_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    platform: str = Field(min_length=1)
+    hostname: str = Field(min_length=1)
+    vscode_version: str | None = None
+    bridge_version: str | None = None
+
+
+class EnrollmentComplete(EnrollmentRequest):
+    code: str = Field(min_length=1)
+
+
+class WorkspaceRegister(BaseModel):
+    workspace_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    device_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+
+
 repository: Repository = PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
 orchestrator = OrchestrationService(repository)
-app = FastAPI(title="Ruata Control Plane", version="0.3.0")
+identity = IdentityService()
+app = FastAPI(title="Ruata Control Plane", version="0.4.0")
 connections: set[WebSocket] = set()
 
 
@@ -58,17 +81,54 @@ def agents(_: str = Depends(authenticate)) -> list[dict[str, str]]:
     ]
 
 
+@app.post("/api/devices/enrollment-code")
+def create_enrollment(_: str = Depends(authenticate)) -> dict[str, str]:
+    return {"code": identity.create_enrollment_code("local-developer")}
+
+
+@app.post("/api/devices/enroll")
+def enroll_device(payload: EnrollmentComplete) -> dict[str, Any]:
+    try:
+        device = identity.enroll_device(
+            code=payload.code,
+            device_id=payload.device_id,
+            name=payload.name,
+            platform=payload.platform,
+            hostname=payload.hostname,
+            vs_code_version=payload.vscode_version,
+            bridge_version=payload.bridge_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"device": device.model_dump(mode="json"), "status": "registered"}
+
+
+@app.get("/api/devices")
+def list_devices(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
+    return [device.model_dump(mode="json") for device in identity.devices.values()]
+
+
+@app.post("/api/workspaces", response_model=Workspace)
+def register_workspace(payload: WorkspaceRegister, _: str = Depends(authenticate)) -> Workspace:
+    try:
+        return identity.register_workspace(Workspace(**payload.model_dump()))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/workspaces")
+def list_workspaces(_: str = Depends(authenticate)) -> list[dict[str, Any]]:
+    return [workspace.model_dump(mode="json") for workspace in identity.workspaces.values()]
+
+
 @app.post("/api/tasks", response_model=Task)
 async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate)) -> Task:
     task = Task(task_id=f"TASK-{uuid4().hex[:8].upper()}", **payload.model_dump())
     repository.create_task(task)
     repository.audit(
         AuditEvent(
-            event_id=str(uuid4()),
-            event_type=AuditEventType.TASK_CREATED,
-            actor=user_id,
-            task_id=task.task_id,
-            metadata={"project_id": task.project_id},
+            event_id=str(uuid4()), event_type=AuditEventType.TASK_CREATED,
+            actor=user_id, task_id=task.task_id, metadata={"project_id": task.project_id},
         )
     )
     await broadcast({"event": "task.created", "task": task.model_dump(mode="json")})
@@ -82,11 +142,7 @@ async def plan_task(task_id: str, _: str = Depends(authenticate)) -> list[Task]:
         raise HTTPException(status_code=404, detail="Task not found")
     if task.status == TaskStatus.BACKLOG:
         task = repository.transition_task(task.task_id, TaskStatus.ANALYZING, task.version)
-        if "research" in task.title.lower() or "research" in task.description.lower():
-            task = repository.transition_task(task.task_id, TaskStatus.RESEARCH, task.version)
-            task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version)
-        else:
-            task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version)
+        task = repository.transition_task(task.task_id, TaskStatus.PLANNED, task.version)
     children = orchestrator.plan_task(task)
     await broadcast({"event": "task.planned", "task_id": task_id, "children": [item.model_dump(mode="json") for item in children]})
     return children
@@ -115,15 +171,7 @@ async def transition_task(task_id: str, payload: TaskTransition, user_id: str = 
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    repository.audit(
-        AuditEvent(
-            event_id=str(uuid4()),
-            event_type=AuditEventType.TASK_TRANSITIONED,
-            actor=user_id,
-            task_id=task_id,
-            metadata={"status": task.status.value, "version": task.version},
-        )
-    )
+    repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TASK_TRANSITIONED, actor=user_id, task_id=task_id, metadata={"status": task.status.value, "version": task.version}))
     await broadcast({"event": "task.transitioned", "task": task.model_dump(mode="json")})
     return task
 
