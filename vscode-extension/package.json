@@ -17,21 +17,10 @@
     "configuration": {
       "title": "Ruata AI",
       "properties": {
-        "ruata.controlPlaneUrl": {
-          "type": "string",
-          "default": "ws://localhost:8000/ws/bridge",
-          "description": "Authenticated Ruata control-plane WebSocket endpoint."
-        },
-        "ruata.bridgeToken": {
-          "type": "string",
-          "default": "",
-          "description": "Development bridge token. Production versions should use secure credential storage."
-        },
-        "ruata.pythonPath": {
-          "type": "string",
-          "default": "python",
-          "description": "Python executable used to start the local bridge."
-        }
+        "ruata.controlPlaneUrl": { "type": "string", "default": "ws://localhost:8000/ws/bridge", "description": "Authenticated Ruata control-plane WebSocket endpoint." },
+        "ruata.bridgeToken": { "type": "string", "default": "", "description": "Development bridge token. Production versions should use secure credential storage." },
+        "ruata.deviceId": { "type": "string", "default": "", "description": "Registered local device ID." },
+        "ruata.pythonPath": { "type": "string", "default": "python", "description": "Python executable used to start the local bridge." }
       }
     }
   },
