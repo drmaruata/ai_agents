@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, ApprovalStatus, RiskLevel, Task, TaskStatus, Workspace, utc_now
+from services.agents.local_routes import build_router
 from services.agents.runtime import AgentRuntime
 from services.agents.service import AgentExecutionService
 from services.approval.service import ApprovalService
@@ -218,15 +219,6 @@ async def execute_on_device(payload: BridgeExecuteRequest, _: str = Depends(auth
     return response
 
 
-def shlex_join(command: Any) -> str | None:
-    if not command:
-        return None
-    if isinstance(command, list):
-        import shlex
-        return shlex.join([str(item) for item in command])
-    return str(command)
-
-
 @app.post("/api/tasks", response_model=Task)
 async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate)) -> Task:
     task = Task(task_id=f"TASK-{uuid4().hex[:8].upper()}", **payload.model_dump())
@@ -275,6 +267,9 @@ async def transition_task(task_id: str, payload: TaskTransition, user_id: str = 
     repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TASK_TRANSITIONED, actor=user_id, task_id=task_id, metadata={"status": task.status.value, "version": task.version}))
     await broadcast({"event": "task.transitioned", "task": task.model_dump(mode="json")})
     return task
+
+
+app.include_router(build_router(repository, bridge_manager, policy_engine, AgentRuntime(settings.model_name)))
 
 
 @app.websocket("/ws/events")
