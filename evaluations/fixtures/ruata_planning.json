@@ -1,0 +1,23 @@
+{
+  "suite": "ruata_planning",
+  "scenarios": [
+    {
+      "id": "fullstack_feature",
+      "input": "Add booking cancellation with UI, API, database changes, tests, and security validation.",
+      "expected_agents": ["john", "manasseh", "ian"],
+      "research_required": false
+    },
+    {
+      "id": "architecture_research",
+      "input": "Compare payment libraries and recommend one for the project.",
+      "expected_first_agent": "kimi",
+      "research_required": true
+    },
+    {
+      "id": "frontend_only",
+      "input": "Fix the responsive dashboard card layout.",
+      "expected_agents": ["manasseh", "ian"],
+      "research_required": false
+    }
+  ]
+}
