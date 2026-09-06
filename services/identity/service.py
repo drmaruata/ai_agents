@@ -39,6 +39,7 @@ class IdentityService:
         self,
         *,
         code: str,
+        user_id: str,
         device_id: str,
         name: str,
         platform: str,
@@ -49,7 +50,7 @@ class IdentityService:
         key = self._hash(code)
         enrollment = self.enrollments.get(key)
         now = datetime.now(timezone.utc)
-        if enrollment is None or enrollment.expires_at <= now:
+        if enrollment is None or enrollment.expires_at <= now or enrollment.user_id != user_id:
             raise ValueError("Invalid or expired enrollment code")
         device = Device(
             device_id=device_id,
@@ -61,7 +62,7 @@ class IdentityService:
             bridge_version=bridge_version,
             last_seen=now,
         )
-        persisted = self.repository.save_device(device)
+        persisted = self.repository.save_device(device, owner_id=user_id)
         self.devices[device_id] = persisted
         del self.enrollments[key]
         return persisted.model_copy(deep=True)
@@ -76,14 +77,22 @@ class IdentityService:
         self.devices[device_id] = persisted
         return persisted.model_copy(deep=True)
 
-    def register_workspace(self, workspace: Workspace) -> Workspace:
+    def register_workspace(self, workspace: Workspace, *, user_id: str) -> Workspace:
         if workspace.device_id not in self.devices:
             raise ValueError("Device is not registered")
+        if not self.repository.is_device_owner(workspace.device_id, user_id):
+            raise ValueError("User does not own the device")
         workspace.registered = True
         workspace.updated_at = datetime.now(timezone.utc)
-        persisted = self.repository.save_workspace(workspace)
+        persisted = self.repository.save_workspace(workspace, user_id=user_id)
         self.workspaces[workspace.workspace_id] = persisted
         return persisted.model_copy(deep=True)
+
+    def can_access_project(self, project_id: str, user_id: str) -> bool:
+        return self.repository.is_project_member(project_id, user_id)
+
+    def can_access_device(self, device_id: str, user_id: str) -> bool:
+        return self.repository.is_device_owner(device_id, user_id)
 
     @staticmethod
     def _hash(value: str) -> str:
