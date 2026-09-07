@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 agents:
   ruata:
@@ -13,6 +13,11 @@ agents:
   john:
     max_risk: high
     tools: [workspace.info, file.read, file.write, file.patch, git.status, git.diff, terminal.run, test.run, database.query]
+  moses:
+    max_risk: medium
+    tools: [workspace.info, file.read, file.write, file.patch, git.status, git.diff, terminal.run, test.run, browser.run]
+    write_paths: [mobile/**, apps/mobile/**, src/mobile/**, ios/**, android/**, tests/mobile/**, e2e/mobile/**]
+    commands: [npm, pnpm, npx, node, yarn, expo, flutter, dart, gradle, adb, fastlane, pod, git]
   ian:
     max_risk: medium
     tools: [workspace.info, file.read, git.status, git.diff, terminal.run, test.run, security.scan, browser.run]
