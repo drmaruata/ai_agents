@@ -21,7 +21,7 @@ export default function Home() {
         const headers = { Authorization: `Bearer ${tokenBody.access_token}` };
         const [agentResponse, taskResponse] = await Promise.all([
           fetch(`${API}/api/agents`, { headers }),
-          fetch(`${API}/api/tasks`, { headers }),
+          fetch(`${API}/api/tasks?project_id=demo`, { headers }),
         ]);
         if (!agentResponse.ok || !taskResponse.ok) throw new Error("Control plane request failed");
         setAgents(await agentResponse.json());
@@ -38,7 +38,7 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand">RUATA</div>
         <nav className="nav" aria-label="Primary">
-          {['Dashboard','Projects','Devices','Agents','Tasks','Runs','Approvals','Evaluations','Audit Log','Settings'].map((item, index) => (
+          {["Dashboard", "Projects", "Devices", "Agents", "Tasks", "Runs", "Approvals", "Evaluations", "Audit Log", "Settings"].map((item, index) => (
             <span className={index === 0 ? "active" : ""} key={item}>{item}</span>
           ))}
         </nav>
@@ -54,11 +54,12 @@ export default function Home() {
         {error && <div className="card" style={{ marginBottom: 16 }}>Control plane: {error}</div>}
         <section className="grid" aria-label="Agents">
           {(agents.length ? agents : [
-            { id: 'ruata', name: 'Ruata', role: 'Principal Engineering Orchestrator', status: 'idle' },
-            { id: 'kimi', name: 'Kimi', role: 'Research & Architecture', status: 'idle' },
-            { id: 'manasseh', name: 'Manasseh', role: 'Frontend Engineer', status: 'idle' },
-            { id: 'john', name: 'John', role: 'Backend & Data Engineer', status: 'idle' },
-            { id: 'ian', name: 'Ian', role: 'Quality / Security / Reliability', status: 'idle' },
+            { id: "ruata", name: "Ruata", role: "Principal Engineering Orchestrator", status: "idle" },
+            { id: "kimi", name: "Kimi", role: "Research & Architecture", status: "idle" },
+            { id: "manasseh", name: "Manasseh", role: "Frontend Engineer", status: "idle" },
+            { id: "john", name: "John", role: "Backend & Data Engineer", status: "idle" },
+            { id: "moses", name: "Moses", role: "Mobile Application Engineer", status: "idle" },
+            { id: "ian", name: "Ian", role: "Quality / Security / Reliability", status: "idle" },
           ]).map((agent) => (
             <article className="card" key={agent.id}>
               <div className="agent-name">{agent.name}</div>
@@ -85,7 +86,7 @@ export default function Home() {
           )}
         </section>
         <section className="section grid" style={{ gridTemplateColumns: "repeat(3,minmax(0,1fr))" }}>
-          <article className="card"><strong>Agents</strong><div className="muted" style={{ marginTop: 6 }}>{agents.length || 5} registered</div></article>
+          <article className="card"><strong>Agents</strong><div className="muted" style={{ marginTop: 6 }}>{agents.length || 6} registered</div></article>
           <article className="card"><strong>Active runs</strong><div className="muted" style={{ marginTop: 6 }}>0 running</div></article>
           <article className="card"><strong>Approvals</strong><div className="muted" style={{ marginTop: 6 }}>0 pending</div></article>
         </section>
