@@ -140,6 +140,7 @@ def agents(_: str = Depends(authenticate)) -> list[dict[str, str]]:
         {"id": AgentRole.KIMI.value, "name": "Kimi", "role": "research_architecture", "status": "idle"},
         {"id": AgentRole.MANASSEH.value, "name": "Manasseh", "role": "frontend", "status": "idle"},
         {"id": AgentRole.JOHN.value, "name": "John", "role": "backend_data", "status": "idle"},
+        {"id": AgentRole.MOSES.value, "name": "Moses", "role": "mobile", "status": "idle"},
         {"id": AgentRole.IAN.value, "name": "Ian", "role": "qa_security_reliability", "status": "idle"},
     ]
 
