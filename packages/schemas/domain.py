@@ -16,6 +16,7 @@ class AgentRole(StrEnum):
     KIMI = "kimi"
     MANASSEH = "manasseh"
     JOHN = "john"
+    MOSES = "moses"
     IAN = "ian"
 
 
@@ -188,7 +189,7 @@ class Approval(DomainModel):
     action: str
     risk_level: RiskLevel
     status: ApprovalStatus = ApprovalStatus.PENDING
-    requested_by: AgentRole | None = None
+    requested_by: str | None = None
     decided_by: str | None = None
     reason: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -255,7 +256,6 @@ class AuditEvent(DomainModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-# Valid transitions. FAILED and BLOCKED are terminal until explicitly reopened by policy.
 TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.BACKLOG: {TaskStatus.ANALYZING, TaskStatus.BLOCKED},
     TaskStatus.ANALYZING: {TaskStatus.RESEARCH, TaskStatus.PLANNED, TaskStatus.BLOCKED},
