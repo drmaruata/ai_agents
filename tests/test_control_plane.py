@@ -19,6 +19,7 @@ def test_agent_registry() -> None:
         "kimi",
         "manasseh",
         "john",
+        "moses",
         "ian",
     }
 
