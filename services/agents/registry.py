@@ -20,5 +20,6 @@ AGENT_CONFIGS = {
     "kimi": AgentConfig("kimi", "Kimi", "research_architecture", str(ROOT / "agents/kimi/system.md")),
     "manasseh": AgentConfig("manasseh", "Manasseh", "frontend", str(ROOT / "agents/manasseh/system.md")),
     "john": AgentConfig("john", "John", "backend_data", str(ROOT / "agents/john/system.md")),
+    "moses": AgentConfig("moses", "Moses", "mobile", str(ROOT / "agents/moses/system.md")),
     "ian": AgentConfig("ian", "Ian", "qa_security_reliability", str(ROOT / "agents/ian/system.md")),
 }
