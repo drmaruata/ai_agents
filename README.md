@@ -2,17 +2,20 @@
 
 Hybrid cloud + local execution platform for a role-based AI software engineering team.
 
-The platform is designed around five specialist agents coordinated by Ruata, a **Supabase-backed cloud platform**, a Python/FastAPI control plane, and a secure local development bridge for working with projects on a developer workstation.
+The platform is designed around six specialist agents coordinated by Ruata, a **Supabase-backed cloud platform**, a Python/FastAPI control plane, and a secure local development bridge for working with projects on a developer workstation.
 
-> **Canonical documentation:** `AI_Software_Development_Agent_Team_Architecture.md` defines the target architecture; `AI Software Development Agent Team — Development Roadmap.md` defines implementation order and acceptance gates. This README is the operational entry point and must remain consistent with those documents.
+> **Canonical documentation:** `AI_Software_Development_Agent_Team_Architecture.md` defines the target architecture; `AI Software Development Agent Team — Development Roadmap.md` defines implementation order and acceptance gates; `docs/MOSES_MOBILE_AGENT_ARCHITECTURE_ADDENDUM.md` and `docs/MOSES_MOBILE_AGENT_ROADMAP_ADDENDUM.md` define the Moses-specific extension to the six-agent fleet. This README is the operational entry point and must remain consistent with those documents.
 
 ## Agent team
 
 - **Ruata** — Principal Engineering Orchestrator
 - **Kimi** — Research & Architecture Engineer
-- **Manasseh** — Frontend Engineer
+- **Manasseh** — Frontend / Web Engineer
 - **John** — Backend & Data Engineer
+- **Moses** — Mobile Application Engineer
 - **Ian** — Quality, Security & Reliability Engineer
+
+Moses owns mobile application development for iOS and Android across React Native/Expo, Flutter, and native platform implementations. John owns backend/API/data contracts; Manasseh owns the web client; Ian validates the complete cross-platform result.
 
 ## Backend architecture: Supabase-first
 
@@ -52,25 +55,25 @@ Self-managed PostgreSQL remains an optional local/integration-test configuration
 
 ## Current implementation status
 
-The project is under active phased development. Early domain, persistence, identity, bridge, policy, orchestration, agent-runtime, dashboard, VS Code, evaluation, CI, sandbox, and observability foundations exist, but the system is **not yet a production-ready autonomous coding platform**.
+The project is under active phased development. Early domain, persistence, identity, bridge, policy, orchestration, agent-runtime, dashboard, VS Code, evaluation, CI, sandbox, and observability foundations exist, with Moses now registered as the sixth specialist agent. The system is **not yet a production-ready autonomous coding platform**.
 
-The immediate backend work is to complete the migration from the existing generic PostgreSQL/development-JWT foundations to the Supabase-first architecture:
+The current mobile-agent flow is:
 
 ```text
-Supabase schema/migrations
+Mobile requirement
         ↓
-Supabase Auth + profiles/memberships
+Ruata classification
         ↓
-RLS + authorization tests
+Moses mobile implementation
         ↓
-Repository/control-plane integration
+John shared backend/API as required
+        +
+Manasseh web implementation as required
         ↓
-Realtime / Storage / bounded Edge Functions
-        ↓
-Local bridge + agent workflows
+Ian cross-platform validation
 ```
 
-See `AI Software Development Agent Team — Development Roadmap.md` for the current phase table and acceptance gates.
+See `AI Software Development Agent Team — Development Roadmap.md` and the Moses addenda for the current phase table and acceptance gates.
 
 ## Architecture
 
@@ -88,10 +91,9 @@ Target operating model:
 Human
   |
   v
-Next.js Dashboard / VS Code
+Next.js Dashboard / VS Code / Mobile Clients
   |
   +---- Supabase Auth
-  |
   +---- Supabase Realtime
   |
   v
@@ -101,6 +103,7 @@ Python/FastAPI Control Plane
   +-- Kimi
   +-- Manasseh
   +-- John
+  +-- Moses
   +-- Ian
   +-- Policy / Approval / Tool Gateway
   |
@@ -125,7 +128,7 @@ The local bridge is the workstation security boundary. It should not expose an u
 
 The public repository must contain no secrets.
 
-Safe client-side configuration may include the project's Supabase URL and the publishable/client key intended for browser use. Never commit or expose:
+Safe client-side configuration may include the project's Supabase URL and publishable/client key intended for browser or mobile use. Never commit or expose:
 
 ```text
 Supabase service-role keys
@@ -136,9 +139,12 @@ LLM API keys
 OAuth client secrets
 Local bridge tokens
 Production credentials
+Mobile signing credentials
+Android keystores
+iOS provisioning/signing secrets
 ```
 
-Privileged Supabase credentials are server-side only and must never be shipped in the Next.js browser bundle, VS Code extension, or Local Agent Bridge.
+Privileged Supabase credentials are server-side only and must never be shipped in the Next.js browser bundle, mobile app bundle, VS Code extension, or Local Agent Bridge.
 
 RLS is a required authorization layer for user-facing Supabase tables. Application-level authorization in the control plane does not replace database-level policy testing.
 
@@ -153,7 +159,8 @@ Read `AGENTS.md` before making implementation changes.
 ```text
 apps/
   dashboard/          Next.js dashboard
-agents/               Agent role specifications
+  mobile/             Reserved mobile application workspace
+agents/               Six agent role specifications
 services/
   control_plane/      FastAPI API/control plane
   agents/             Model runtime and agent composition
@@ -175,11 +182,12 @@ vscode-extension/     VS Code integration
 config/               Declarative agent policies
 infra/
   db/                 Supabase/PostgreSQL migrations
-  docker-compose.yml  Optional local infrastructure
 evaluations/           Agent evaluation fixtures and runners
 tests/                 Cross-service/unit/security tests
-docs/                  Architecture, API, security and operations
+docs/                  Architecture, roadmap, API, security and operations
 ```
+
+The `apps/mobile/` directory is a reserved application workspace; Moses remains framework-neutral until Kimi/architecture review selects React Native/Expo, Flutter, or native iOS/Android for a specific project.
 
 ## Prerequisites
 
@@ -199,6 +207,13 @@ For the VS Code integration:
 - VS Code
 - Node.js/npm
 - A Python executable visible to the extension
+
+For mobile development when a mobile project is present:
+
+- Node.js/npm or the project-selected package manager
+- Android SDK/ADB for Android work
+- Xcode and an Apple development environment for iOS work
+- Project-selected mobile toolchain such as Expo, Flutter, or native SDKs
 
 For local development and testing:
 
@@ -276,9 +291,11 @@ Do not commit `.env` or real credentials.
 
 ### Credential boundary
 
-`SUPABASE_PUBLISHABLE_KEY` may be used by browser-facing code when appropriate. A Supabase secret/service credential must only be used by trusted server-side control-plane code and must never be exposed to clients.
+`SUPABASE_PUBLISHABLE_KEY` may be used by browser/mobile-facing code when appropriate. A Supabase secret/service credential must only be used by trusted server-side control-plane code and must never be exposed to clients.
 
 The exact environment-variable names may evolve during the migration, but the security boundary does not.
+
+Mobile signing credentials must use secure OS/CI secret storage and never Git.
 
 ## Supabase database workflow
 
@@ -288,6 +305,7 @@ Versioned SQL migrations live under:
 
 ```text
 infra/db/
+supabase/migrations/
 ```
 
 The migration workflow should be:
@@ -362,10 +380,11 @@ reports
 logs
 test artifacts
 screenshots
+mobile build artifacts when explicitly required
 other non-secret blobs
 ```
 
-Store structured metadata in PostgreSQL and enforce authorization for Storage access. Do not upload `.env` files, credentials, private keys, or other secrets as general artifacts.
+Store structured metadata in PostgreSQL and enforce authorization for Storage access. Do not upload `.env` files, credentials, private keys, signing material, or other secrets as general artifacts.
 
 ## Edge Functions
 
@@ -379,6 +398,35 @@ database-adjacent automation
 ```
 
 They are not the primary runtime for long-running agent execution, arbitrary terminal access, browser automation, or local workstation control. Those remain control-plane/worker or Local Agent Bridge responsibilities.
+
+## Mobile application development
+
+Moses is the dedicated mobile specialist.
+
+For a mobile task, Ruata should route work according to actual requirements:
+
+```text
+Mobile-only
+  → Moses
+  → Ian
+
+Mobile + Backend
+  → John + Moses
+  → Ian
+
+Mobile + Web + Backend
+  → John + Manasseh + Moses
+  → Ian
+
+Architecture uncertainty
+  → Kimi
+  → John / Manasseh / Moses as applicable
+  → Ian
+```
+
+Moses may work on React Native/Expo, Flutter, native Android/Kotlin, native iOS/Swift/SwiftUI, or another approved mobile stack.
+
+Mobile clients consume approved backend contracts and Supabase Auth/RLS-safe data access. They never contain service-role keys, database passwords, or signing secrets.
 
 ## Start local infrastructure
 
@@ -406,7 +454,9 @@ python -m pytest -v
 
 Supabase-dependent tests should run against a dedicated test/development Supabase environment or an explicitly supported local PostgreSQL equivalent, with RLS/Auth tests included for the relevant acceptance gate.
 
-The current suite covers the domain state machine, planning, identity foundations, approval behavior, and local bridge policy controls. The suite will expand as the Supabase migration and remaining roadmap phases are implemented.
+Mobile-specific tests should include the applicable platform build, emulator/simulator, integration, accessibility, and offline/online checks.
+
+The current suite covers the domain state machine, planning, identity foundations, approval behavior, local bridge policy controls, and Moses routing tests. The suite will expand as the Supabase migration and remaining roadmap phases are implemented.
 
 ## Run the Ruata evaluation fixture
 
@@ -421,6 +471,7 @@ evaluations/ruata
 evaluations/kimi
 evaluations/john
 evaluations/manasseh
+evaluations/moses
 evaluations/ian
 evaluations/system
 ```
@@ -524,6 +575,7 @@ main
  |
  +-- task-123-john
  +-- task-123-manasseh
+ +-- task-123-moses
  +-- task-123-ian
 ```
 
@@ -537,7 +589,7 @@ GitHub Actions is configured in:
 .github/workflows/ci.yml
 ```
 
-CI should run Python tests, dashboard/VS Code checks, and progressively add Supabase migration/RLS/Auth integration checks as those capabilities become testable in automation.
+CI should run Python tests, dashboard/VS Code checks, and progressively add Supabase migration/RLS/Auth and mobile integration checks as those capabilities become testable in automation.
 
 A passing CI run must not be claimed unless the actual workflow result is verified.
 
@@ -548,16 +600,17 @@ The platform follows least privilege by default:
 - The cloud should not receive unrestricted filesystem access.
 - Local communication is outbound and authenticated.
 - Workspaces are explicitly selected and scoped.
-- `.env`, credentials, secrets, and private-key paths are blocked by default.
+- `.env`, credentials, secrets, private-key paths, and mobile signing secrets are blocked by default.
 - Commands use `shell=False` in the local bridge.
 - Agent/tool/path/risk policy is evaluated before execution.
 - High/critical local actions require an approval workflow.
 - Supabase RLS protects user-facing database rows.
 - Supabase secret/service credentials remain server-side only.
+- Mobile clients use only public/publishable configuration plus user-scoped sessions.
 - Database/Auth/Storage changes are tested as security-sensitive changes.
 - Agents must not weaken tests, linting, type checks, RLS, or security controls to hide failures.
 
-See `AI_Software_Development_Agent_Team_Architecture.md` for the complete security and operating model.
+See `AI_Software_Development_Agent_Team_Architecture.md` and the Moses architecture addendum for the complete operating model.
 
 ## Development sequence
 
@@ -581,8 +634,9 @@ Supabase schema / migrations
   -> Kimi
   -> John
   -> Manasseh
+  -> Moses
   -> Ian
-  -> VS Code / Dashboard
+  -> VS Code / Dashboard / Mobile
   -> Git / CI
   -> Sandboxes / Evaluations / Observability
   -> Security Hardening
@@ -599,9 +653,10 @@ When implementation decisions are made, use this order:
 ```text
 1. AI_Software_Development_Agent_Team_Architecture.md
 2. AI Software Development Agent Team — Development Roadmap.md
-3. AGENTS.md and repository-local instructions
-4. Existing code/tests
-5. Current authoritative external documentation for technologies used
+3. Moses architecture/roadmap addenda where mobile behavior is concerned
+4. AGENTS.md and repository-local instructions
+5. Existing code/tests
+6. Current authoritative external documentation for technologies used
 ```
 
 When implementation diverges from the architecture, update the source-of-truth documents first or record an explicit architecture decision before continuing.
