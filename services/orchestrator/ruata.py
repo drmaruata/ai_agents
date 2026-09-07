@@ -47,10 +47,15 @@ class RuataOrchestrator:
     def classify(self, task: TaskSpec) -> dict[str, bool]:
         text = f"{task.title} {task.description}".lower()
         research_terms = ("research", "compare", "architecture", "library", "framework", "integration", "migration")
+        mobile_terms = (
+            "mobile", "ios", "android", "react native", "react-native", "expo", "flutter", "swiftui",
+            "swift", "kotlin", "apk", "ipa", "mobile app", "app store", "play store"
+        )
         return {
             "research_required": any(term in text for term in research_terms),
-            "frontend_required": any(term in text for term in ("ui", "ux", "frontend", "page", "component", "form", "dashboard")),
+            "frontend_required": any(term in text for term in ("ui", "ux", "frontend", "page", "component", "form", "dashboard", "web app")),
             "backend_required": any(term in text for term in ("api", "backend", "database", "auth", "server", "supabase")),
+            "mobile_required": any(term in text for term in mobile_terms),
             "qa_required": True,
         }
 
@@ -82,18 +87,30 @@ class RuataOrchestrator:
                 acceptance_criteria=["backend tests pass", "contract validated"],
             ))
         if classification["frontend_required"]:
-            frontend_deps = implementation_dependency.copy()
             plan.append(PlannedTask(
                 id=f"{task.task_id}.frontend",
                 parent_task_id=task.task_id,
                 agent=AgentRole.MANASSEH,
                 action="frontend_implementation",
-                depends_on=frontend_deps,
+                depends_on=implementation_dependency.copy(),
                 risk_level=task.risk_level,
                 acceptance_criteria=["frontend tests pass", "browser validation passes"],
             ))
+        if classification["mobile_required"]:
+            plan.append(PlannedTask(
+                id=f"{task.task_id}.mobile",
+                parent_task_id=task.task_id,
+                agent=AgentRole.MOSES,
+                action="mobile_implementation",
+                depends_on=implementation_dependency.copy(),
+                risk_level=task.risk_level,
+                acceptance_criteria=["mobile tests pass", "platform build validation passes", "mobile accessibility checks pass"],
+            ))
 
-        implementation_ids = [item.id for item in plan if item.agent in {AgentRole.JOHN, AgentRole.MANASSEH}]
+        implementation_ids = [
+            item.id for item in plan
+            if item.agent in {AgentRole.JOHN, AgentRole.MANASSEH, AgentRole.MOSES}
+        ]
         plan.append(PlannedTask(
             id=f"{task.task_id}.qa",
             parent_task_id=task.task_id,
