@@ -35,6 +35,15 @@ DEFAULT_POLICIES = [
         max_risk=RiskLevel.HIGH,
     ),
     ToolPolicy(
+        agent=AgentRole.MOSES,
+        tool_names=frozenset({"workspace.info", "file.read", "file.write", "file.patch", "git.status", "git.diff", "terminal.run", "test.run", "browser.run"}),
+        read_paths=("**",),
+        write_paths=("mobile/**", "apps/mobile/**", "src/mobile/**", "ios/**", "android/**", "tests/mobile/**", "e2e/mobile/**"),
+        commands=frozenset({"npm", "pnpm", "npx", "node", "yarn", "expo", "flutter", "dart", "gradle", "adb", "fastlane", "pod", "git"}),
+        network_targets=frozenset({"localhost"}),
+        max_risk=RiskLevel.MEDIUM,
+    ),
+    ToolPolicy(
         agent=AgentRole.IAN,
         tool_names=frozenset({"workspace.info", "file.read", "git.status", "git.diff", "terminal.run", "test.run", "security.scan", "browser.run"}),
         read_paths=("**",),
