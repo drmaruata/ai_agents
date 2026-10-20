@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str | None = None
     supabase_url: str | None = None
     supabase_publishable_key: str | None = None
+    dashboard_origin: str | None = None
     jwt_secret: str = "development-only-change-me"
     jwt_algorithm: str = "HS256"
     local_bridge_token: str | None = None
