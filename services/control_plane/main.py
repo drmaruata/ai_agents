@@ -108,6 +108,38 @@ def supabase_auth_enabled() -> bool:
     return bool(settings.supabase_url and settings.supabase_publishable_key)
 
 
+_RISK_ORDER = {
+    RiskLevel.LOW: 0,
+    RiskLevel.MEDIUM: 1,
+    RiskLevel.HIGH: 2,
+    RiskLevel.CRITICAL: 3,
+}
+
+
+def validate_high_risk_approval(
+    *,
+    approval: Any,
+    task_id: str | None,
+    project_id: str,
+    tool: str,
+    risk_level: RiskLevel,
+    task: Task | None,
+) -> None:
+    """Fail closed unless an approved record authorizes this exact execution."""
+    if not task_id or task is None:
+        raise ValueError("A valid task_id is required for high-risk local execution")
+    if task.project_id != project_id:
+        raise ValueError("Task does not belong to project")
+    if approval is None or approval.status != ApprovalStatus.APPROVED:
+        raise ValueError("Provided approval is not approved")
+    if approval.task_id != task_id:
+        raise ValueError("Approval does not match task")
+    if approval.action != tool:
+        raise ValueError("Approval does not authorize this tool")
+    if _RISK_ORDER[approval.risk_level] < _RISK_ORDER[risk_level]:
+        raise ValueError("Approval risk level is insufficient for this execution")
+
+
 def require_project_access(user_id: str, project_id: str) -> None:
     if supabase_auth_enabled() and not identity.can_access_project(project_id, user_id):
         raise HTTPException(status_code=403, detail="User is not authorized for this project")
@@ -257,13 +289,26 @@ async def execute_on_device(payload: BridgeExecuteRequest, user_id: str = Depend
     if payload.task_id and task and task.project_id != payload.project_id:
         raise HTTPException(status_code=403, detail="Task does not belong to project")
     if payload.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
-        if not payload.approval_id:
-            raise HTTPException(status_code=403, detail="Approval is required for high-risk local execution")
-        approval = approvals.get(payload.approval_id)
-        if approval is None or approval.status != ApprovalStatus.APPROVED:
-            raise HTTPException(status_code=403, detail="Provided approval is not approved")
-        if payload.task_id and approval.task_id != payload.task_id:
-            raise HTTPException(status_code=403, detail="Approval does not match task")
+        approval = approvals.get(payload.approval_id) if payload.approval_id else None
+        try:
+            validate_high_risk_approval(
+                approval=approval,
+                task_id=payload.task_id,
+                project_id=payload.project_id,
+                tool=payload.tool,
+                risk_level=payload.risk_level,
+                task=task,
+            )
+        except ValueError as exc:
+            repository.audit(AuditEvent(
+                event_id=str(uuid4()),
+                event_type=AuditEventType.TOOL_DENIED,
+                actor=user_id,
+                task_id=payload.task_id,
+                device_id=payload.device_id,
+                metadata={"tool": payload.tool, "reason": str(exc), "approval_id": payload.approval_id},
+            ))
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
         policy_engine.authorize(PolicyContext(payload.agent, payload.project_id, payload.workspace_id, payload.tool, payload.risk_level, relative_path=payload.args.get("path"), command=shlex_join(payload.args.get("command", []))), write=payload.tool in {"file.write", "file.patch"})
         response = await bridge_manager.send_tool_request(payload.device_id, payload.tool, payload.args)
