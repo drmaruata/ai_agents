@@ -110,7 +110,7 @@ policy_engine = PolicyEngine(DEFAULT_POLICIES)
 approval_repository = PostgresApprovalRepository(settings.database_url) if settings.database_url else InMemoryApprovalRepository()
 approvals = ApprovalService(approval_repository)
 app = FastAPI(title="Ruata Control Plane", version="0.11.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=list(dict.fromkeys(["http://localhost:3000", "http://127.0.0.1:3000"] + ([settings.dashboard_origin.rstrip("/")] if settings.dashboard_origin else []))), allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"], allow_headers=["Authorization", "Content-Type", "Idempotency-Key"])
 event_connections: set[WebSocket] = set()
 
 
