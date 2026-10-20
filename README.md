@@ -53,6 +53,14 @@ Supabase is not intended to replace the Python control plane. The control plane 
 
 Self-managed PostgreSQL remains an optional local/integration-test configuration. It is not the production source of truth.
 
+## Verification update — 20 October 2026
+
+The latest approval-hardening work binds high-risk local execution to an approved record for the same task, project, tool/action, and sufficient risk level. Missing or mismatched approvals are denied before the local bridge is invoked, and approval denials are audited. Unit/API coverage and PostgreSQL persistence integration coverage have been added.
+
+GitHub Actions is currently not providing usable runners for the latest commits: jobs terminate within seconds with no steps executed and no runner assigned. Consequently, this change set is committed but not CI-verified. The live Supabase AI agents project was inspected: approval requester/decider columns are UUIDs, the adapter accounts for that, approvals has a project-member SELECT policy, and idempotency_keys has RLS enabled with no client policies (consistent with its server-only access intent). No live production data was modified during this inspection.
+
+The deployed Supabase Auth/RLS path and complete dashboard → control plane → local bridge workflow still require a successful environment-level acceptance test.
+
 ## Current implementation status
 
 The project is under active phased development. Early domain, persistence, identity, bridge, policy, orchestration, agent-runtime, dashboard, VS Code, evaluation, CI, sandbox, and observability foundations exist, with Moses now registered as the sixth specialist agent. The system is **not yet a production-ready autonomous coding platform**.
