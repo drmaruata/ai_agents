@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from local.bridge.main import LocalAgentBridge, WorkspacePolicyError
+from packages.schemas.domain import RiskLevel
 
 
 def test_local_bridge_reads_and_writes_within_workspace(tmp_path: Path) -> None:
@@ -32,7 +33,7 @@ def test_local_bridge_command_runs_without_shell(tmp_path: Path) -> None:
     bridge = LocalAgentBridge(str(tmp_path), "device-test")
     result = bridge.run_command(
         ["python", "-c", "print('bridge-ok')"],
-        risk_level=__import__("packages.schemas.domain", fromlist=["RiskLevel"]).RiskLevel.LOW,
+        risk_level=RiskLevel.LOW,
     )
 
     assert result["status"] == "succeeded"
