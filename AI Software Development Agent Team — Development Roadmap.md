@@ -101,8 +101,8 @@ Recent implementation changes:
 - CI separates regular Python unit tests from PostgreSQL persistence integration tests to avoid initializing the API against an empty database during unit-test collection.
 
 Verification limitations:
-- A successful GitHub Actions run is still required before declaring this milestone complete.
-- The live Supabase project's schema, Auth/RLS behavior, and deployed dashboard/VS Code/bridge flow have not been proven by these repository changes alone.
+- A successful GitHub Actions run is still required before declaring this milestone complete. Latest runs have `runner_id: 0` and zero executed steps, so GitHub Actions infrastructure must be restored before test/build results can be observed.
+- The live Supabase `AI agents` project is active/healthy; the approvals columns and project-member SELECT policy were inspected and match the repository adapter's assumptions. The full Auth/RLS request path and deployed dashboard/VS Code/bridge flow have not been proven end to end.
 - The full production acceptance gate remains the deployed vertical slice described in Phase 21.
 
 # 1. Development Principles
