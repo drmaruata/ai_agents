@@ -768,6 +768,21 @@ Execution
 
 This prevents the agent prompt from being the only security boundary.
 
+### High-risk approval binding
+
+A human approval is a narrowly scoped authorization record, not a general permission token. Before any high-risk or critical local tool call, the control plane must fail closed unless all of the following hold:
+
+- the request includes an existing task and the task belongs to the requested project
+- the approval is in the `approved` state and is still valid
+- the approval is bound to the same task
+- the approval action exactly matches the requested tool/action
+- the approved risk level is at least as restrictive as the requested execution risk
+- the caller has access to the project, workspace, and device
+
+Approval validation failures must be denied before the bridge is invoked and written to the audit trail. Approval state transitions must be conditional so a pending approval can be decided only once. Expired, rejected, mismatched, or task-independent approvals must not authorize high-risk execution.
+
+The repository includes unit and API-level tests for these invariants. These tests are not a substitute for validating the deployed Supabase schema, Auth/RLS policies, and the complete dashboard-to-local-bridge workflow.
+
 ## 2A.22 MCP and Tool Integration
 
 Use MCP where it provides a clean standardized interface to external systems such as:
