@@ -203,3 +203,18 @@ def test_bridge_api_executes_matching_approved_tool_and_audits(monkeypatch) -> N
     assert response.json()["ok"] is True
     assert repository.events[-1].event_type.value == "tool.executed"
     assert repository.events[-1].task_id == task.task_id
+
+
+def test_high_risk_approval_rejects_stale_approved_record() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    stale = _approval(created_at=datetime.now(timezone.utc) - timedelta(hours=2))
+    with pytest.raises(ValueError, match="has expired"):
+        validate_high_risk_approval(
+            approval=stale,
+            task_id="TASK-1",
+            project_id="PROJECT-1",
+            tool="file.write",
+            risk_level=RiskLevel.HIGH,
+            task=_task(),
+        )
