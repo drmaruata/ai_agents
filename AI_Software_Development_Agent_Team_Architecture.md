@@ -2729,3 +2729,13 @@ The strongest implementation of this five-agent concept is not five equal autono
 - **Humans remain the final authority for consequential changes.**
 
 This architecture provides a clear path from assisted coding to controlled, semi-autonomous software engineering without making the database, serverless layer, or model provider responsible for functions they should not own.
+
+## Implementation update — authenticated project entry and acceptance gates
+
+The dashboard's first authenticated workflow now uses the Supabase browser client and password-based Supabase Auth. It passes the user access token to the FastAPI control plane and does not mint development tokens from the browser. Project creation stores the verified Supabase user UUID as `projects.owner_id`; project listing returns only projects owned by that user or shared through workspace membership. The control plane accepts a configured dashboard CORS origin through `DASHBOARD_ORIGIN`.
+
+Production startup now requires a database URL, Supabase Auth configuration, and a high-entropy `LOCAL_BRIDGE_TOKEN` of at least 32 characters. Bridge token comparisons use a constant-time comparison. PostgreSQL task creation reserves the idempotency key and writes the task, state-history record, and final idempotency response in one transaction. Reusing a key with a different request returns HTTP 409.
+
+The local SQL migration set includes Supabase identity-column alignment and server-only idempotency storage. The live Supabase project was inspected read-only; its project-owner/member RLS policies and existing idempotency table were confirmed. No production schema or data was changed as part of this implementation.
+
+Acceptance limitation: GitHub Actions jobs are still terminating before runner assignment (runner ID 0, no steps executed). Therefore, these commits are not CI-verified. The dashboard currently implements sign-in, project create/select, and task listing; the remaining navigation items are placeholders. Device enrollment, approvals, audit-log views, deployed API/Auth integration, and a real two-user tenant-isolation test remain explicit acceptance work before production readiness.
