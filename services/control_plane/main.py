@@ -259,7 +259,7 @@ async def execute_on_device(payload: BridgeExecuteRequest, user_id: str = Depend
     if payload.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
         if not payload.approval_id:
             raise HTTPException(status_code=403, detail="Approval is required for high-risk local execution")
-        approval = approvals.approvals.get(payload.approval_id)
+        approval = approvals.get(payload.approval_id)
         if approval is None or approval.status != ApprovalStatus.APPROVED:
             raise HTTPException(status_code=403, detail="Provided approval is not approved")
         if payload.task_id and approval.task_id != payload.task_id:
