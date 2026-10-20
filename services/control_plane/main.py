@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -98,6 +99,8 @@ if settings.environment.lower() == "production":
         raise RuntimeError("DATABASE_URL must be configured in production; refusing in-memory persistence")
     if not (settings.supabase_url and settings.supabase_publishable_key):
         raise RuntimeError("Supabase Auth must be configured in production")
+    if not settings.local_bridge_token or len(settings.local_bridge_token) < 32:
+        raise RuntimeError("LOCAL_BRIDGE_TOKEN must be configured with at least 32 characters in production")
 
 
 repository: Repository = PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -487,8 +490,15 @@ async def events(websocket: WebSocket) -> None:
 async def bridge(websocket: WebSocket) -> None:
     device_id = websocket.query_params.get("device_id")
     provided = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not device_id or not provided or (settings.local_bridge_token and provided != settings.local_bridge_token):
+    if not device_id or not provided:
         await websocket.close(code=1008, reason="unauthorized")
+        return
+    if settings.local_bridge_token:
+        if not hmac.compare_digest(provided, settings.local_bridge_token):
+            await websocket.close(code=1008, reason="unauthorized")
+            return
+    elif settings.environment.lower() == "production":
+        await websocket.close(code=1008, reason="bridge authentication is not configured")
         return
     await websocket.accept()
     await bridge_manager.register(device_id, websocket)
