@@ -97,7 +97,8 @@ agent_execution = AgentExecutionService(repository, AgentRuntime(settings.model_
 identity = IdentityService(identity_repository)
 bridge_manager = BridgeConnectionManager()
 policy_engine = PolicyEngine(DEFAULT_POLICIES)
-approvals = ApprovalService()
+approval_repository = PostgresApprovalRepository(settings.database_url) if settings.database_url else InMemoryApprovalRepository()
+approvals = ApprovalService(approval_repository)
 app = FastAPI(title="Ruata Control Plane", version="0.11.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 event_connections: set[WebSocket] = set()
@@ -186,18 +187,16 @@ def request_approval(task_id: str, action: str, risk_level: RiskLevel = RiskLeve
 @app.get("/api/approvals")
 def list_approvals(status: ApprovalStatus | None = None, user_id: str = Depends(authenticate)) -> list[dict[str, Any]]:
     values = []
-    for item in approvals.approvals.values():
+    for item in approvals.list(status):
         task = repository.get_task(item.task_id)
         if task and (not supabase_auth_enabled() or identity.can_access_project(task.project_id, user_id)):
             values.append(item)
-    if status:
-        values = [item for item in values if item.status == status]
     return [item.model_dump(mode="json") for item in values]
 
 
 @app.post("/api/approvals/{approval_id}/decide")
 def decide_approval(approval_id: str, payload: ApprovalDecision, user_id: str = Depends(authenticate)) -> dict[str, Any]:
-    existing = approvals.approvals.get(approval_id)
+    existing = approvals.get(approval_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Approval not found")
     task = repository.get_task(existing.task_id)
