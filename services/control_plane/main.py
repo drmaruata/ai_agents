@@ -211,6 +211,9 @@ def create_project(payload: ProjectCreate, user_id: str = Depends(authenticate))
     """Create a project owned by the authenticated Supabase user."""
     if not supabase_auth_enabled() or not settings.database_url:
         raise HTTPException(status_code=503, detail="Project creation requires configured Supabase Auth and PostgreSQL")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Project name cannot be blank")
     project_id = f"PRJ-{uuid4().hex[:12].upper()}"
     try:
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn, conn.cursor() as cur:
@@ -220,7 +223,7 @@ def create_project(payload: ProjectCreate, user_id: str = Depends(authenticate))
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING project_id, owner_id, name, repository_url, default_branch, created_at, updated_at
                 """,
-                (project_id, user_id, payload.name.strip(), payload.repository_url, payload.default_branch),
+                (project_id, user_id, name, payload.repository_url, payload.default_branch),
             )
             created = dict(cur.fetchone())
     except psycopg.Error as exc:
@@ -394,7 +397,19 @@ async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate),
     if idempotency_key:
         stored = repository.get_idempotency(idempotency_key, scope)
         if stored:
-            return Task.model_validate(stored)
+            existing = Task.model_validate(stored)
+            same_request = (
+                existing.project_id == payload.project_id
+                and existing.title == payload.title
+                and existing.description == payload.description
+                and existing.risk_level == payload.risk_level
+                and existing.acceptance_criteria == payload.acceptance_criteria
+                and existing.allowed_paths == payload.allowed_paths
+                and existing.metadata == payload.metadata
+            )
+            if not same_request:
+                raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different request")
+            return existing
     task = Task(task_id=f"TASK-{uuid4().hex[:8].upper()}", **payload.model_dump())
     repository.create_task(task)
     repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TASK_CREATED, actor=user_id, task_id=task.task_id, metadata={"project_id": task.project_id}))
