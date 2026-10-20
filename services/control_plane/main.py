@@ -12,6 +12,7 @@ from packages.schemas.domain import AgentRole, AuditEvent, AuditEventType, Appro
 from services.agents.local_routes import build_router
 from services.agents.runtime import AgentRuntime
 from services.agents.service import AgentExecutionService
+from services.approval.repository import InMemoryApprovalRepository, PostgresApprovalRepository
 from services.approval.service import ApprovalService
 from services.bridge.manager import BridgeConnectionManager
 from services.identity.repository import PostgresIdentityRepository, InMemoryIdentityRepository
