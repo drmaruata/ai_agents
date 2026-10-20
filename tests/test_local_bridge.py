@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 
 from local.bridge.main import LocalAgentBridge, WorkspacePolicyError
-from packages.schemas.domain import RiskLevel
+from packages.schemas.domain import AgentRole, RiskLevel
 
 
 def test_local_bridge_reads_and_writes_within_workspace(tmp_path: Path) -> None:
-    bridge = LocalAgentBridge(str(tmp_path), "device-test")
+    bridge = LocalAgentBridge(str(tmp_path), "device-test", agent=AgentRole.MANASSEH)
     bridge.write_file("src/example.py", "print('ok')")
 
     assert bridge.read_file("src/example.py") == "print('ok')"
@@ -30,7 +30,7 @@ def test_local_bridge_blocks_sensitive_paths(tmp_path: Path, path: str) -> None:
 
 
 def test_local_bridge_command_runs_without_shell(tmp_path: Path) -> None:
-    bridge = LocalAgentBridge(str(tmp_path), "device-test")
+    bridge = LocalAgentBridge(str(tmp_path), "device-test", agent=AgentRole.JOHN)
     result = bridge.run_command(
         ["python", "-c", "print('bridge-ok')"],
         risk_level=RiskLevel.LOW,
