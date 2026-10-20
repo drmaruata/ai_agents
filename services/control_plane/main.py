@@ -397,27 +397,25 @@ def shlex_join(command: Any) -> str | None:
 async def create_task(payload: TaskCreate, user_id: str = Depends(authenticate), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> Task:
     require_project_access(user_id, payload.project_id)
     scope = f"task.create:{user_id}"
+    candidate = Task(task_id=f"TASK-{uuid4().hex[:8].upper()}", **payload.model_dump())
     if idempotency_key:
-        stored = repository.get_idempotency(idempotency_key, scope)
-        if stored:
-            existing = Task.model_validate(stored)
-            same_request = (
-                existing.project_id == payload.project_id
-                and existing.title == payload.title
-                and existing.description == payload.description
-                and existing.risk_level == payload.risk_level
-                and existing.acceptance_criteria == payload.acceptance_criteria
-                and existing.allowed_paths == payload.allowed_paths
-                and existing.metadata == payload.metadata
-            )
-            if not same_request:
-                raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different request")
-            return existing
-    task = Task(task_id=f"TASK-{uuid4().hex[:8].upper()}", **payload.model_dump())
-    repository.create_task(task)
+        task = repository.create_task_idempotent(candidate, idempotency_key, scope)
+        same_request = (
+            task.project_id == payload.project_id
+            and task.title == payload.title
+            and task.description == payload.description
+            and task.risk_level == payload.risk_level
+            and task.acceptance_criteria == payload.acceptance_criteria
+            and task.allowed_paths == payload.allowed_paths
+            and task.metadata == payload.metadata
+        )
+        if not same_request:
+            raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different request")
+        if task.task_id != candidate.task_id:
+            return task
+    else:
+        task = repository.create_task(candidate)
     repository.audit(AuditEvent(event_id=str(uuid4()), event_type=AuditEventType.TASK_CREATED, actor=user_id, task_id=task.task_id, metadata={"project_id": task.project_id}))
-    if idempotency_key:
-        repository.put_idempotency(idempotency_key, scope, task.model_dump(mode="json"))
     await broadcast({"event": "task.created", "task": task.model_dump(mode="json")})
     return task
 
