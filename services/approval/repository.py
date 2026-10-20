@@ -69,7 +69,7 @@ class InMemoryApprovalRepository(ApprovalRepository):
 
 
 class PostgresApprovalRepository(ApprovalRepository):
-    """PostgreSQL persistence for approvals, with row-locked state transitions."""
+    """PostgreSQL persistence for approvals with atomic conditional state transitions."""
 
     def __init__(self, dsn: str) -> None:
         if not dsn:
