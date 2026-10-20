@@ -60,3 +60,23 @@ def test_invalid_development_token_is_rejected() -> None:
         headers={"Authorization": "Bearer not-a-valid-token"},
     )
     assert response.status_code == 401
+
+
+def test_idempotency_key_cannot_be_reused_for_a_different_task_request() -> None:
+    headers = auth_headers() | {"Idempotency-Key": "test-task-payload-conflict"}
+    first_payload = {
+        "project_id": "demo",
+        "title": "First request",
+        "description": "Create the initial task",
+        "risk_level": "low",
+    }
+    first = client.post("/api/tasks", headers=headers, json=first_payload)
+    assert first.status_code == 200
+
+    conflicting = client.post(
+        "/api/tasks",
+        headers=headers,
+        json={**first_payload, "title": "Different request"},
+    )
+    assert conflicting.status_code == 409
+
