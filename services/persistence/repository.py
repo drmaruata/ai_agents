@@ -215,7 +215,7 @@ class PostgresRepository(Repository):
             cur.execute(
                 """
                 INSERT INTO idempotency_keys (key,scope,response) VALUES (%s,%s,%s)
-                ON CONFLICT (key) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (key, scope, Jsonb(response)),
             )
