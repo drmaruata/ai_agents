@@ -82,6 +82,13 @@ class WorkspaceRegister(BaseModel):
     path: str = Field(min_length=1)
 
 
+if settings.environment.lower() == "production":
+    if not settings.database_url:
+        raise RuntimeError("DATABASE_URL must be configured in production; refusing in-memory persistence")
+    if not (settings.supabase_url and settings.supabase_publishable_key):
+        raise RuntimeError("Supabase Auth must be configured in production")
+
+
 repository: Repository = PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
 identity_repository = PostgresIdentityRepository(settings.database_url) if settings.database_url else InMemoryIdentityRepository()
 orchestrator = OrchestrationService(repository)
