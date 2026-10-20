@@ -1,7 +1,11 @@
 import pytest
+from fastapi.testclient import TestClient
 
-from packages.schemas.domain import Approval, ApprovalStatus, RiskLevel, Task
+from packages.schemas.domain import Approval, ApprovalStatus, AuditEvent, RiskLevel, Task
+from services.control_plane.auth import issue_dev_token
+from services.control_plane import main as control_plane
 from services.control_plane.main import validate_high_risk_approval
+from services.persistence.repository import InMemoryRepository
 from services.approval.repository import InMemoryApprovalRepository
 from services.approval.service import ApprovalService
 
@@ -75,3 +79,82 @@ def test_approval_expiry_only_expires_old_pending_records() -> None:
     assert [item.approval_id for item in expired] == [pending.approval_id]
     assert service.get(pending.approval_id).status == ApprovalStatus.EXPIRED
     assert service.get(recent.approval_id).status == ApprovalStatus.PENDING
+
+
+
+def test_bridge_api_denies_approval_for_different_tool(monkeypatch) -> None:
+    repository = InMemoryRepository()
+    task = _task()
+    repository.create_task(task)
+    approval_service = ApprovalService(InMemoryApprovalRepository())
+    approval = approval_service.request(
+        task_id=task.task_id,
+        action="terminal.run",
+        risk_level=RiskLevel.HIGH,
+    )
+    approval_service.decide(approval.approval_id, approved=True, decided_by="reviewer")
+
+    monkeypatch.setattr(control_plane, "repository", repository)
+    monkeypatch.setattr(control_plane, "approvals", approval_service)
+    monkeypatch.setattr(control_plane, "require_workspace_access", lambda *args: None)
+    monkeypatch.setattr(control_plane.policy_engine, "authorize", lambda *args, **kwargs: None)
+
+    async def should_not_execute(*args, **kwargs):
+        raise AssertionError("bridge must not execute when approval does not match")
+
+    monkeypatch.setattr(control_plane.bridge_manager, "send_tool_request", should_not_execute)
+    client = TestClient(control_plane.app)
+    response = client.post(
+        "/api/bridge/execute",
+        headers={"Authorization": f"Bearer {issue_dev_token()}"},
+        json={
+            "task_id": task.task_id,
+            "approval_id": approval.approval_id,
+            "device_id": "device-1",
+            "agent": "ruata",
+            "project_id": task.project_id,
+            "workspace_id": "workspace-1",
+            "tool": "file.write",
+            "args": {"path": "src/example.py", "content": "safe"},
+            "risk_level": "high",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "does not authorize this tool" in response.json()["detail"]
+    assert repository.events[-1].event_type.value == "tool.denied"
+
+
+def test_bridge_api_requires_task_for_high_risk_execution(monkeypatch) -> None:
+    repository = InMemoryRepository()
+    approval_service = ApprovalService(InMemoryApprovalRepository())
+    approval = approval_service.request(
+        task_id="TASK-1",
+        action="file.write",
+        risk_level=RiskLevel.HIGH,
+    )
+    approval_service.decide(approval.approval_id, approved=True, decided_by="reviewer")
+
+    monkeypatch.setattr(control_plane, "repository", repository)
+    monkeypatch.setattr(control_plane, "approvals", approval_service)
+    monkeypatch.setattr(control_plane, "require_workspace_access", lambda *args: None)
+
+    client = TestClient(control_plane.app)
+    response = client.post(
+        "/api/bridge/execute",
+        headers={"Authorization": f"Bearer {issue_dev_token()}"},
+        json={
+            "approval_id": approval.approval_id,
+            "device_id": "device-1",
+            "agent": "ruata",
+            "project_id": "PROJECT-1",
+            "workspace_id": "workspace-1",
+            "tool": "file.write",
+            "args": {"path": "src/example.py", "content": "safe"},
+            "risk_level": "high",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "task_id is required" in response.json()["detail"]
+    assert repository.events[-1].event_type.value == "tool.denied"
