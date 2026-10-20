@@ -4,13 +4,14 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from packages.schemas.domain import Approval, ApprovalStatus, RiskLevel
+from services.approval.repository import ApprovalRepository, InMemoryApprovalRepository
 
 
 class ApprovalService:
-    """Explicit human approval gate for consequential actions."""
+    """Human approval gate with repository-backed state."""
 
-    def __init__(self) -> None:
-        self.approvals: dict[str, Approval] = {}
+    def __init__(self, repository: ApprovalRepository | None = None) -> None:
+        self.repository = repository or InMemoryApprovalRepository()
 
     def request(self, *, task_id: str, action: str, risk_level: RiskLevel, requested_by: str | None = None) -> Approval:
         if risk_level in {RiskLevel.LOW, RiskLevel.MEDIUM}:
@@ -20,30 +21,27 @@ class ApprovalService:
             task_id=task_id,
             action=action,
             risk_level=risk_level,
-            # The domain model currently represents agent requesters separately from authenticated users.
-            # The authenticated user is retained in the audit event by the control plane.
-            requested_by=None,
+            requested_by=requested_by,
         )
-        self.approvals[approval.approval_id] = approval
-        return approval
+        return self.repository.create(approval)
+
+    def get(self, approval_id: str) -> Approval | None:
+        return self.repository.get(approval_id)
+
+    def list(self, status: ApprovalStatus | None = None) -> list[Approval]:
+        return self.repository.list(status)
 
     def decide(self, approval_id: str, *, approved: bool, decided_by: str, reason: str | None = None) -> Approval:
-        approval = self.approvals.get(approval_id)
-        if approval is None:
+        existing = self.repository.get(approval_id)
+        if existing is None:
             raise KeyError(approval_id)
-        if approval.status != ApprovalStatus.PENDING:
+        if existing.status != ApprovalStatus.PENDING:
             raise ValueError("Approval is no longer pending")
-        approval.status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
-        approval.decided_by = decided_by
-        approval.reason = reason
-        approval.decided_at = datetime.now(timezone.utc)
-        return approval
+        item = self.repository.decide(approval_id, approved=approved, decided_by=decided_by, reason=reason)
+        if item is None:
+            raise ValueError("Approval is no longer pending")
+        return item
 
     def expire(self, ttl: timedelta = timedelta(hours=1)) -> list[Approval]:
         now = datetime.now(timezone.utc)
-        expired: list[Approval] = []
-        for approval in self.approvals.values():
-            if approval.status == ApprovalStatus.PENDING and now - approval.created_at > ttl:
-                approval.status = ApprovalStatus.EXPIRED
-                expired.append(approval)
-        return expired
+        return self.repository.expire(now, now - ttl)
