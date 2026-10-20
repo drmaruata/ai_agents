@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -136,6 +137,8 @@ def validate_high_risk_approval(
         raise ValueError("Approval does not match task")
     if approval.action != tool:
         raise ValueError("Approval does not authorize this tool")
+    if approval.created_at < datetime.now(timezone.utc) - timedelta(hours=1):
+        raise ValueError("Approval has expired")
     if _RISK_ORDER[approval.risk_level] < _RISK_ORDER[risk_level]:
         raise ValueError("Approval risk level is insufficient for this execution")
 
