@@ -72,3 +72,72 @@ def test_postgres_repository_persists_task_and_state_history() -> None:
     with psycopg.connect(dsn) as connection:
         connection.execute("DELETE FROM tasks WHERE task_id = %s", (task.task_id,))
         connection.commit()
+
+
+
+@pytest.mark.integration
+def test_postgres_approval_persists_and_allows_only_one_decision() -> None:
+    from packages.schemas.domain import Approval, ApprovalStatus, RiskLevel
+    from services.approval.repository import PostgresApprovalRepository
+
+    dsn = os.getenv("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is not configured")
+
+    with psycopg.connect(dsn) as connection:
+        for migration in sorted(Path("infra/db").glob("*.sql")):
+            connection.execute(migration.read_text(encoding="utf-8"))
+        connection.execute(
+            """
+            INSERT INTO projects (project_id, name)
+            VALUES ('approval-integration-project', 'Approval Integration')
+            ON CONFLICT (project_id) DO NOTHING
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (task_id, project_id, title, description)
+            VALUES ('TASK-APPROVAL-INTEGRATION', 'approval-integration-project', 'Approval integration', 'Verify durable approval state')
+            ON CONFLICT (task_id) DO NOTHING
+            """
+        )
+
+    first_repository = PostgresApprovalRepository(dsn)
+    approval = Approval(
+        approval_id="APR-INTEGRATION-TEST",
+        task_id="TASK-APPROVAL-INTEGRATION",
+        action="file.write",
+        risk_level=RiskLevel.HIGH,
+    )
+    with psycopg.connect(dsn) as connection:
+        connection.execute("DELETE FROM approvals WHERE approval_id=%s", (approval.approval_id,))
+    first_repository.create(approval)
+
+    restarted_repository = PostgresApprovalRepository(dsn)
+    loaded = restarted_repository.get(approval.approval_id)
+    assert loaded is not None
+    assert loaded.status == ApprovalStatus.PENDING
+    assert loaded.action == "file.write"
+
+    decided = restarted_repository.decide(
+        approval.approval_id,
+        approved=True,
+        decided_by="integration-reviewer",
+        reason="verified",
+    )
+    repeated = restarted_repository.decide(
+        approval.approval_id,
+        approved=False,
+        decided_by="second-reviewer",
+        reason="must not overwrite",
+    )
+
+    assert decided is not None
+    assert decided.status == ApprovalStatus.APPROVED
+    assert repeated is None
+    assert restarted_repository.get(approval.approval_id).status == ApprovalStatus.APPROVED
+
+    with psycopg.connect(dsn) as connection:
+        connection.execute("DELETE FROM approvals WHERE approval_id=%s", (approval.approval_id,))
+        connection.execute("DELETE FROM tasks WHERE task_id=%s", (approval.task_id,))
+        connection.execute("DELETE FROM projects WHERE project_id=%s", ("approval-integration-project",))
