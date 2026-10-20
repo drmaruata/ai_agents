@@ -5,6 +5,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+import psycopg
+from psycopg.rows import dict_row
+
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -26,6 +29,12 @@ from services.policy.engine import PolicyContext, PolicyDenied, PolicyEngine
 
 from .auth import authenticate, issue_dev_token
 from .settings import settings
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    repository_url: str | None = Field(default=None, max_length=2048)
+    default_branch: str = Field(default="main", min_length=1, max_length=255)
 
 
 class TaskCreate(BaseModel):
@@ -175,6 +184,51 @@ def dev_token() -> dict[str, str]:
 @app.get("/api/auth/me")
 def auth_me(user_id: str = Depends(authenticate)) -> dict[str, str]:
     return {"user_id": user_id, "provider": "supabase" if supabase_auth_enabled() else "development"}
+
+
+@app.get("/api/projects")
+def list_projects(user_id: str = Depends(authenticate)) -> list[dict[str, Any]]:
+    """List only projects owned by the authenticated user or shared through a workspace."""
+    if not supabase_auth_enabled() or not settings.database_url:
+        raise HTTPException(status_code=503, detail="Project listing requires configured Supabase Auth and PostgreSQL")
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT p.project_id, p.name, p.repository_url, p.default_branch, p.created_at, p.updated_at
+            FROM projects p
+            LEFT JOIN workspaces w ON w.project_id = p.project_id
+            LEFT JOIN workspace_members wm ON wm.workspace_id = w.workspace_id
+            WHERE p.owner_id = %s OR wm.user_id = %s
+            ORDER BY p.created_at DESC
+            """,
+            (user_id, user_id),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+@app.post("/api/projects", status_code=201)
+def create_project(payload: ProjectCreate, user_id: str = Depends(authenticate)) -> dict[str, Any]:
+    """Create a project owned by the authenticated Supabase user."""
+    if not supabase_auth_enabled() or not settings.database_url:
+        raise HTTPException(status_code=503, detail="Project creation requires configured Supabase Auth and PostgreSQL")
+    project_id = f"PRJ-{uuid4().hex[:12].upper()}"
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO projects (project_id, owner_id, name, repository_url, default_branch)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING project_id, owner_id, name, repository_url, default_branch, created_at, updated_at
+                """,
+                (project_id, user_id, payload.name.strip(), payload.repository_url, payload.default_branch),
+            )
+            created = dict(cur.fetchone())
+    except psycopg.Error as exc:
+        # Do not return database error text or SQL details to clients.
+        emit("project.create.failed", actor=user_id, error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Unable to create project") from exc
+    emit("project.created", actor=user_id, project_id=project_id)
+    return created
 
 
 @app.get("/api/agents")
