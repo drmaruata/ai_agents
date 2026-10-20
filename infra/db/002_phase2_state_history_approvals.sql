@@ -13,10 +13,11 @@ CREATE INDEX IF NOT EXISTS idx_task_state_history_task_created
   ON task_state_history(task_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS idempotency_keys (
-  key TEXT PRIMARY KEY,
+  key TEXT NOT NULL,
   scope TEXT NOT NULL,
   response JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (key, scope)
 );
 
 CREATE TABLE IF NOT EXISTS users (
