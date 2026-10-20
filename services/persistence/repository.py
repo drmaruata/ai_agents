@@ -40,6 +40,15 @@ class Repository(ABC):
     @abstractmethod
     def put_idempotency(self, key: str, scope: str, response: dict[str, Any]) -> None: ...
 
+    def create_task_idempotent(self, task: Task, key: str, scope: str) -> Task:
+        """Create a task once per idempotency key; PostgreSQL overrides atomically."""
+        stored = self.get_idempotency(key, scope)
+        if stored:
+            return Task.model_validate(stored)
+        created = self.create_task(task)
+        self.put_idempotency(key, scope, created.model_dump(mode="json"))
+        return created
+
 
 class InMemoryRepository(Repository):
     def __init__(self) -> None:
@@ -219,6 +228,51 @@ class PostgresRepository(Repository):
                 """,
                 (key, scope, Jsonb(response)),
             )
+
+    def create_task_idempotent(self, task: Task, key: str, scope: str) -> Task:
+        """Reserve the key and persist task/history in one PostgreSQL transaction."""
+        response = task.model_dump(mode="json")
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO idempotency_keys (key, scope, response)
+                VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING response
+                """,
+                (key, scope, Jsonb(response)),
+            )
+            reservation = cur.fetchone()
+            if reservation is None:
+                cur.execute(
+                    "SELECT response FROM idempotency_keys WHERE key=%s AND scope=%s",
+                    (key, scope),
+                )
+                existing = cur.fetchone()
+                if existing is None:
+                    raise RuntimeError("Idempotency reservation disappeared")
+                return Task.model_validate(existing["response"])
+
+            cur.execute(
+                """
+                INSERT INTO tasks (task_id, project_id, title, description, risk_level, assigned_agent,
+                    status, dependencies, allowed_paths, acceptance_criteria, metadata, version, created_at, updated_at)
+                VALUES (%(task_id)s,%(project_id)s,%(title)s,%(description)s,%(risk_level)s,%(assigned_agent)s,
+                    %(status)s,%(dependencies)s,%(allowed_paths)s,%(acceptance_criteria)s,%(metadata)s,%(version)s,%(created_at)s,%(updated_at)s)
+                RETURNING *
+                """,
+                _task_params(task),
+            )
+            row = cur.fetchone()
+            cur.execute(
+                "INSERT INTO task_state_history (history_id,task_id,from_status,to_status,version,actor,reason) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (f"HST-{task.task_id}-1", task.task_id, None, task.status.value, task.version, None, "created"),
+            )
+            cur.execute(
+                "UPDATE idempotency_keys SET response=%s WHERE key=%s AND scope=%s",
+                (Jsonb(response), key, scope),
+            )
+            return _row_to_task(row)
 
 
 def _task_params(task: Task) -> dict[str, Any]:
