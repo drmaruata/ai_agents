@@ -141,3 +141,56 @@ def test_postgres_approval_persists_and_allows_only_one_decision() -> None:
         connection.execute("DELETE FROM approvals WHERE approval_id=%s", (approval.approval_id,))
         connection.execute("DELETE FROM tasks WHERE task_id=%s", (approval.task_id,))
         connection.execute("DELETE FROM projects WHERE project_id=%s", ("approval-integration-project",))
+
+
+@pytest.mark.integration
+def test_postgres_idempotent_task_creation_returns_one_durable_task() -> None:
+    dsn = os.getenv("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is not configured")
+
+    with psycopg.connect(dsn) as connection:
+        for migration in sorted(Path("infra/db").glob("*.sql")):
+            connection.execute(migration.read_text(encoding="utf-8"))
+        connection.execute(
+            """
+            INSERT INTO projects (project_id, name)
+            VALUES ('idempotency-integration-project', 'Idempotency Integration')
+            ON CONFLICT (project_id) DO NOTHING
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO agents (agent_id, name, role)
+            VALUES ('ruata', 'Ruata', 'ruata')
+            ON CONFLICT (agent_id) DO NOTHING
+            """
+        )
+
+    repository = PostgresRepository(dsn)
+    candidate = Task(
+        task_id="TASK-IDEMPOTENCY-ONCE",
+        project_id="idempotency-integration-project",
+        title="Idempotency acceptance",
+        description="A retry must return the original task",
+    )
+    try:
+        first = repository.create_task_idempotent(candidate, "integration-key-once", "task.create:test-user")
+        second = repository.create_task_idempotent(
+            candidate.model_copy(update={"task_id": "TASK-IDEMPOTENCY-RETRY"}),
+            "integration-key-once",
+            "task.create:test-user",
+        )
+        assert first.task_id == second.task_id == "TASK-IDEMPOTENCY-ONCE"
+        with psycopg.connect(dsn) as connection:
+            count = connection.execute(
+                "SELECT count(*) FROM tasks WHERE project_id=%s",
+                ("idempotency-integration-project",),
+            ).fetchone()[0]
+            assert count == 1
+    finally:
+        with psycopg.connect(dsn) as connection:
+            connection.execute("DELETE FROM idempotency_keys WHERE key=%s AND scope=%s", ("integration-key-once", "task.create:test-user"))
+            connection.execute("DELETE FROM tasks WHERE project_id=%s", ("idempotency-integration-project",))
+            connection.execute("DELETE FROM projects WHERE project_id=%s", ("idempotency-integration-project",))
+
