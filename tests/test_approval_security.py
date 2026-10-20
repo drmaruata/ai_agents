@@ -158,3 +158,48 @@ def test_bridge_api_requires_task_for_high_risk_execution(monkeypatch) -> None:
     assert response.status_code == 403
     assert "task_id is required" in response.json()["detail"]
     assert repository.events[-1].event_type.value == "tool.denied"
+
+
+
+def test_bridge_api_executes_matching_approved_tool_and_audits(monkeypatch) -> None:
+    repository = InMemoryRepository()
+    task = _task()
+    repository.create_task(task)
+    approval_service = ApprovalService(InMemoryApprovalRepository())
+    approval = approval_service.request(
+        task_id=task.task_id,
+        action="file.write",
+        risk_level=RiskLevel.HIGH,
+    )
+    approval_service.decide(approval.approval_id, approved=True, decided_by="reviewer")
+
+    monkeypatch.setattr(control_plane, "repository", repository)
+    monkeypatch.setattr(control_plane, "approvals", approval_service)
+    monkeypatch.setattr(control_plane, "require_workspace_access", lambda *args: None)
+    monkeypatch.setattr(control_plane.policy_engine, "authorize", lambda *args, **kwargs: None)
+
+    async def fake_execute(device_id, tool, args):
+        return {"ok": True, "tool": tool, "device_id": device_id}
+
+    monkeypatch.setattr(control_plane.bridge_manager, "send_tool_request", fake_execute)
+    client = TestClient(control_plane.app)
+    response = client.post(
+        "/api/bridge/execute",
+        headers={"Authorization": f"Bearer {issue_dev_token()}"},
+        json={
+            "task_id": task.task_id,
+            "approval_id": approval.approval_id,
+            "device_id": "device-1",
+            "agent": "ruata",
+            "project_id": task.project_id,
+            "workspace_id": "workspace-1",
+            "tool": "file.write",
+            "args": {"path": "src/example.py", "content": "safe"},
+            "risk_level": "high",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert repository.events[-1].event_type.value == "tool.executed"
+    assert repository.events[-1].task_id == task.task_id
