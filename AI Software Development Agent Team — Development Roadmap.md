@@ -56,7 +56,7 @@ Self-managed PostgreSQL remains optional for local/integration testing. It is **
 
 ---
 
-## Implementation Status — 2026-09-06
+## Implementation Status — 2026-10-20
 
 The roadmap is being executed directly on `main`. The repository currently contains substantial foundations across the early and supporting phases. The Supabase architecture decision now changes the remaining implementation order for persistence and identity: the existing PostgreSQL repository and development JWT foundations should be migrated to the Supabase-first model before declaring those phases complete.
 
@@ -66,8 +66,8 @@ The roadmap is being executed directly on `main`. The repository currently conta
 | 1 | **Complete** | Shared domain entities, task state machine, transition validation, tests |
 | 2 | **In progress — Supabase migration** | Existing PostgreSQL schema/repository/idempotency/state history foundation exists; migrate canonical production persistence to Supabase, validate restart durability and migration workflow |
 | 3 | **In progress — Supabase Auth/RLS** | Device/workspace persistence foundation exists; replace development-only JWT identity path with Supabase Auth, membership model, RLS, authenticated API flow, and authorization tests |
-| 4 | **In progress** | Local bridge, outbound WebSocket protocol, scoped filesystem/command execution; integrate authenticated Supabase-backed device/workspace authorization |
-| 5 | **In progress** | Agent/tool/path/command/risk policy engine and high-risk approval gate |
+| 4 | **In progress — integration verification required** | Local bridge and outbound WebSocket protocol exist; bridge API now fails closed for high-risk operations unless the approval matches task, project, action/tool, and risk level. Validate authenticated device/workspace flow end to end. |
+| 5 | **In progress — security hardening added** | High-risk approval binding and denial auditing are implemented with unit/API tests; verify CI and database integration before treating the approval gate as production-ready. |
 | 6 | **In progress** | Shared tool registry and MCP-ready contracts; production MCP/tool integrations remain |
 | 7 | **In progress** | Deterministic Ruata planner, task decomposition, specialist routing, orchestration service |
 | 8 | **In progress** | Kimi role contract and provider-neutral model runtime; research web/tool execution remains |
@@ -77,17 +77,33 @@ The roadmap is being executed directly on `main`. The repository currently conta
 | 12 | **In progress** | VS Code extension connects to local bridge and exposes status/start/stop controls |
 | 13 | **In progress** | Next.js dashboard connected to control-plane agent/task state; add Supabase Auth/session and Realtime integration |
 | 14 | **Foundation ready** | Git worktree manager added; agent worktree lifecycle integration remains |
-| 15 | **Foundation ready** | GitHub Actions CI for Python, dashboard, and VS Code extension; add Supabase migration/RLS integration checks where feasible |
+| 15 | **In progress — CI baseline being repaired** | CI now separates in-memory unit tests from PostgreSQL persistence integration tests. Latest successful run is still required; add Supabase Auth/RLS integration checks in a configured project environment. |
 | 16 | **Foundation ready** | Sandbox interface and local Docker adapter; cloud sandbox provider integration remains |
 | 17 | **Foundation ready** | Ruata planning fixtures and deterministic evaluation runner |
 | 18 | **Foundation ready** | Structured observability events; centralized tracing/cost/metrics remains |
 | 19 | **Planned** | Threat model and controls defined; dedicated security test suite, including Supabase/RLS/Auth tests, remains |
 | 20 | **Planned** | Production deployment topology defined; Supabase project environments, compute deployment, secrets, migrations, backups/operations remain |
-| 21 | **Planned** | First real end-to-end benchmark remains the primary v1.0 acceptance test |
+| 21 | **Planned — vertical-slice acceptance gate** | API-level approval-to-bridge tests now cover matching approved execution, mismatched tool denial, and missing task denial. Full deployed dashboard → agent → bridge → audit benchmark remains outstanding. |
 
 **Important:** “Foundation ready” does not mean the phase is production-complete. A phase is complete only when its acceptance gate is demonstrably satisfied in the running system.
 
 ---
+
+
+## Verification Update — 2026-10-20
+
+Recent implementation changes:
+- Approval state now uses a repository abstraction with in-memory and PostgreSQL adapters.
+- High-risk bridge execution fails closed unless the approval is approved and bound to the exact task, project, tool/action, and sufficient risk level.
+- Approval failures are recorded as denied tool audit events.
+- Added unit/API tests for approval binding, expiry, denial auditing, and a matching approved bridge execution.
+- Added PostgreSQL integration coverage for approval persistence across repository instances and one-time state transitions.
+- CI separates regular Python unit tests from PostgreSQL persistence integration tests to avoid initializing the API against an empty database during unit-test collection.
+
+Verification limitations:
+- A successful GitHub Actions run is still required before declaring this milestone complete.
+- The live Supabase project's schema, Auth/RLS behavior, and deployed dashboard/VS Code/bridge flow have not been proven by these repository changes alone.
+- The full production acceptance gate remains the deployed vertical slice described in Phase 21.
 
 # 1. Development Principles
 
