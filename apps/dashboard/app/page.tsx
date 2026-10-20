@@ -53,13 +53,12 @@ export default function Home() {
 
   const apiFetch = useCallback(async (path: string, init: RequestInit = {}) => {
     if (!session?.access_token) throw new Error("Sign in to continue.");
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${session.access_token}`);
+    if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     const response = await fetch(`${API}${path}`, {
       ...init,
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        ...(init.body ? { "Content-Type": "application/json" } : {}),
-        ...init.headers,
-      },
+      headers,
       cache: "no-store",
     });
     const body = await response.json().catch(() => ({}));
