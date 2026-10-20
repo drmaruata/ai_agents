@@ -668,3 +668,35 @@ When implementation decisions are made, use this order:
 ```
 
 When implementation diverges from the architecture, update the source-of-truth documents first or record an explicit architecture decision before continuing.
+
+## Dashboard and production acceptance configuration
+
+The dashboard uses Supabase Auth password sign-in and sends the resulting access token to the FastAPI control plane. It does not request or mint a development token in the browser.
+
+Dashboard build-time variables:
+
+- `NEXT_PUBLIC_SUPABASE_URL`: the Supabase project URL.
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: the Supabase publishable/anon key only. Never use a service-role key in a browser-exposed variable.
+- `NEXT_PUBLIC_API_BASE_URL`: the HTTPS base URL of the deployed control plane.
+
+Control-plane environment variables for production:
+
+- `ENVIRONMENT=production`
+- `DATABASE_URL`: server-side PostgreSQL/Supabase connection string.
+- `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`: validate user access tokens through Supabase Auth.
+- `LOCAL_BRIDGE_TOKEN`: high-entropy secret of at least 32 characters shared only with trusted bridge clients.
+- `DASHBOARD_ORIGIN`: exact deployed dashboard origin, for example `https://dashboard.example.com`, used by CORS.
+
+Do not expose `DATABASE_URL` or `LOCAL_BRIDGE_TOKEN` to the dashboard. Use HTTPS for the deployed dashboard and API. Configure Supabase Auth email/password providers and redirect settings in the Supabase dashboard before signing in.
+
+### Manual acceptance checklist
+
+1. Sign in with a real Supabase Auth user and verify `GET /api/auth/me` returns the authenticated user ID.
+2. Create a project and verify the returned `owner_id` matches the authenticated user; verify a second user cannot list or access it unless explicitly shared through a workspace.
+3. Create a task using an `Idempotency-Key`; repeat the identical request and verify the same task is returned. Reuse that key with a different payload and verify HTTP 409.
+4. Create an approval, decide it once, and verify a second decision cannot overwrite it. Try high-risk bridge execution with missing, expired, mismatched, and rejected approvals; each must be denied and audited.
+5. Restart the control plane and verify persisted tasks, approvals, and task history remain available.
+6. Verify an invalid bridge token is rejected and production startup fails when `LOCAL_BRIDGE_TOKEN` is missing or shorter than 32 characters.
+7. Run `python -m pytest -v`, `python -m pytest -v tests/test_postgres_repository.py` with `DATABASE_URL` pointing to a disposable PostgreSQL database, `npm install && npm run build` in `apps/dashboard`, and `npm install && npm run compile` in `vscode-extension`.
+
+The dashboard currently exposes project creation/selection and task listing. Device, approval, run, evaluation, and audit navigation labels remain placeholders; their complete UI workflows are not yet implemented. A successful local build or test suite does not substitute for verifying the deployed environment.
